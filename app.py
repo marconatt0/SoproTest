@@ -15,9 +15,9 @@ if arquivo_upload:
     df = pd.read_excel(arquivo_upload, header=1)
     
     # Limpeza básica de linhas sem Site ou sem status
-    df = df.dropna(subset=['Site']) 
+    df = df.dropna(subset=['Estação']) 
     df['Status'] = df['Status'].astype(str).str.strip()
-    df['Sharing'] = df['Sharing'].astype(str).str.strip()
+    df['Sharing'] = df['Empresa'].astype(str).str.strip()
 
     # --- BARRA LATERAL (FUNIL DE FILTROS) ---
     st.sidebar.header("🎯 Funil de Filtros")
@@ -35,8 +35,21 @@ if arquivo_upload:
     else:
         df_filtrado_emp = df
 
+    # Filtro de Status
+    status_selecionado = st.sidebar.selectbox(
+        "2. Filtre pelo Status do Chamado:",
+        options=["TODOS", "EM ANDAMENTO", "CONCLUÍDOS"]
+    )
+
+    if status_selecionado == "EM ANDAMENTO":
+        df_filtrado_status = df_filtrado_emp[df_filtrado_emp['Status'].str.lower() == 'em andamento']
+    elif status_selecionado == "CONCLUÍDOS":
+        df_filtrado_status = df_filtrado_emp[df_filtrado_emp['Status'].str.lower() == 'concluído']
+    else:
+        df_filtrado_status = df_filtrado_emp
+
     # 2. FILTRO: Filtrar pelas Estações daquela Sharing
-    estacoes_disponiveis = sorted(df_filtrado_emp['Site'].unique().tolist())
+    estacoes_disponiveis = sorted(df_filtrado_status['Estação'].unique().tolist())
     estacoes_selecionadas = st.sidebar.multiselect(
         "2. Filtre pelas Estações (Sites):", 
         options=estacoes_disponiveis,
@@ -45,7 +58,7 @@ if arquivo_upload:
     
     if estacoes_selecionadas:
         # Dataframe final com todos os filtros aplicados
-        df_final = df_filtrado_emp[df_filtrado_emp['Site'].isin(estacoes_selecionadas)]
+        df_final = df_filtrado_status[df_filtrado_status['Estação'].isin(estacoes_selecionadas)]
         
         # --- SEÇÃO 1: METRICAS GERAIS GLOBAIS ---
         st.subheader("📈 Resumo do Filtro Atual")
@@ -73,7 +86,7 @@ if arquivo_upload:
         st.subheader(f"🏢 Relatório de Chamados por Site (Sharing: {empresa_selecionada})")
         
         # Criando a tabela agrupada por Site   
-        relatorio_estacao = df_final.groupby('Site').agg(
+        relatorio_estacao = df_final.groupby('Estação').agg(
             Total_Chamados=('ID Sopro', 'count'),
             Em_Andamento=('Status', lambda x: (x == 'Em andamento').sum()),
             Concluidos_Fechados=('Status', lambda x: x.str.lower().str.contains('concl|fech').sum())
@@ -96,16 +109,16 @@ if arquivo_upload:
         
         if not df_final.empty:
             # Agrupa os dados para o formato que o gráfico precisa
-            df_grafico = df_final.groupby(['Site', 'Status']).size().reset_index(name='Quantidade')
+            df_grafico = df_final.groupby(['Estação', 'Status']).size().reset_index(name='Quantidade')
             
             # Calcula o total da Site   para descobrir a porcentagem individual de cada pedaço da barra
-            df_grafico['Total_Estacao'] = df_grafico.groupby('Site')['Quantidade'].transform('sum')
+            df_grafico['Total_Estacao'] = df_grafico.groupby('Estação')['Quantidade'].transform('sum')
             df_grafico['Porcentagem'] = (df_grafico['Quantidade'] / df_grafico['Total_Estacao'] * 100).round(1)
             
             # Monta o gráfico utilizando o Plotly
             fig = px.bar(
                 df_grafico, 
-                x='Site', 
+                x='Estação', 
                 y='Quantidade', 
                 color='Status',
                 title=f'Volume Total por Site e % de Status Status ({empresa_selecionada})',
