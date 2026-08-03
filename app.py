@@ -7,7 +7,7 @@ st.set_page_config(page_title="Painel de Controle - Site", layout="wide")
 st.title("📊 Afunilador de Chamados - Sharings & Site")
 st.write("Suba o arquivo extraído do portal para cruzar dados de Sharing e site.")
 
-# Componente para subir o arquivo (Aceita .xlsx e .xls)
+# Componente para subir o arquivo (Aceita .xlsx e .xls) ''
 arquivo_upload = st.file_uploader("Suba o arquivo Excel aqui", type=["xlsx", "xls"])
 
 if arquivo_upload:
@@ -23,7 +23,7 @@ if arquivo_upload:
     st.sidebar.header("🎯 Funil de Filtros")
     
     # 1. NOVO FILTRO: Filtrar por Sharing Prestadora
-    empresas_disponiveis = sorted(df['Sharing'].unique().tolist())
+    empresas_disponiveis = sorted(df['Empresa'].unique().tolist())
     empresa_selecionada = st.sidebar.selectbox(
         "1. Selecione a Sharing:",
         options=["TODAS"] + empresas_disponiveis
