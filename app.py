@@ -23,7 +23,7 @@ if arquivo_upload:
     st.sidebar.header("🎯 Funil de Filtros")
     
     # 1. NOVO FILTRO: Filtrar por Sharing Prestadora
-    empresas_disponiveis = sorted(df['Empresa'].unique().tolist())
+    empresas_disponiveis = sorted(df['Empresa']dropna().astype(str).unique().tolist())
     empresa_selecionada = st.sidebar.selectbox(
         "1. Selecione a Sharing:",
         options=["TODAS"] + empresas_disponiveis
