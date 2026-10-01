@@ -1,4 +1,6 @@
 import io
+import re
+import unicodedata
 
 import streamlit as st
 import pandas as pd
@@ -19,6 +21,21 @@ STATUS_EXCLUIDOS = ["aguardando número do chamado", "cancelado pela claro", "fe
 
 CATEGORIA_CORES = {"Resolvido": "#2ECC71", "Aberto": "#FFA500", "Cancelado": "#95A5A6"}
 SLA_CORES = {"NO PRAZO": "#2ECC71", "FORA DO PRAZO": "#E74C3C", "SEM SLA": "#BDC3C7"}
+
+
+def normalizar_texto(texto):
+    """Minúsculas, sem acentos e com qualquer pontuação/espaço (inclusive invisível) virando um espaço só."""
+    texto = unicodedata.normalize('NFKD', str(texto))
+    texto = ''.join(c for c in texto if not unicodedata.combining(c)).lower()
+    return re.sub(r'[^a-z0-9]+', ' ', texto).strip()
+
+
+STATUS_EXCLUIDOS_NORM = [normalizar_texto(s) for s in STATUS_EXCLUIDOS]
+
+
+def status_excluido(status):
+    s = normalizar_texto(status)
+    return any(k in s for k in STATUS_EXCLUIDOS_NORM)
 
 
 def categorizar_status(status):
@@ -84,7 +101,7 @@ def carregar_dados(conteudo):
         if col in df.columns:
             df[col] = df[col].apply(lambda v: '' if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v))
     df['Status'] = df['Status'].astype(str).str.strip()
-    df = df[~df['Status'].str.lower().isin(STATUS_EXCLUIDOS)]
+    df = df[~df['Status'].apply(status_excluido)]
     df['Empresa'] = df['Empresa'].fillna('NÃO INFORMADA').astype(str).str.strip()
     if 'Tipo' in df.columns:
         df['Tipo'] = df['Tipo'].fillna('NÃO INFORMADO').astype(str).str.strip()
