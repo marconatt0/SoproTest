@@ -14,6 +14,8 @@ st.set_page_config(page_title="Painel de Controle - Estações", layout="wide")
 # ---------------------------------------------------------------------------
 STATUS_RESOLVIDO = ["concluído", "concluido", "fechado"]
 STATUS_CANCELADO = ["cancelado"]
+# Status que não entram em nenhum cálculo nem relatório
+STATUS_EXCLUIDOS = ["aguardando número do chamado", "cancelado pela claro", "fechado pelo mso"]
 
 CATEGORIA_CORES = {"Resolvido": "#2ECC71", "Aberto": "#FFA500", "Cancelado": "#95A5A6"}
 SLA_CORES = {"NO PRAZO": "#2ECC71", "FORA DO PRAZO": "#E74C3C", "SEM SLA": "#BDC3C7"}
@@ -82,6 +84,7 @@ def carregar_dados(conteudo):
         if col in df.columns:
             df[col] = df[col].apply(lambda v: '' if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v))
     df['Status'] = df['Status'].astype(str).str.strip()
+    df = df[~df['Status'].str.lower().isin(STATUS_EXCLUIDOS)]
     df['Empresa'] = df['Empresa'].fillna('NÃO INFORMADA').astype(str).str.strip()
     if 'Tipo' in df.columns:
         df['Tipo'] = df['Tipo'].fillna('NÃO INFORMADO').astype(str).str.strip()
@@ -207,12 +210,6 @@ def historico_mensal(df):
 
 
 def filtrar_status(df, status_selecionado):
-    if status_selecionado == "EM ABERTO":
-        return df[df['Categoria'] == 'Aberto']
-    if status_selecionado == "CONCLUÍDOS / FECHADOS":
-        return df[df['Categoria'] == 'Resolvido']
-    if status_selecionado == "CANCELADOS":
-        return df[df['Categoria'] == 'Cancelado']
     if status_selecionado != "TODOS":
         return df[df['Status'] == status_selecionado]
     return df
@@ -272,7 +269,7 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
 
     tend = df_sel.groupby(['Mês Abertura', 'Categoria']).size().reset_index(name='Chamados')
     fig_t = px.bar(tend, x='Mês Abertura', y='Chamados', color='Categoria', barmode='stack',
-                   color_discrete_map=CATEGORIA_CORES, title='Evolução mensal no período')
+                   color_discrete_map=CATEGORIA_CORES, title='Chamados abertos em cada mês (sem acumular meses anteriores)')
     st.plotly_chart(fig_t, width='stretch')
 
     with st.expander("🔎 Ver lista completa de chamados neste período"):
@@ -315,7 +312,7 @@ if arquivo_upload:
 
     status_selecionado = st.sidebar.selectbox(
         "2. Status do Chamado:",
-        options=["TODOS", "EM ABERTO", "CONCLUÍDOS / FECHADOS", "CANCELADOS"] + sorted(df_f1['Status'].unique().tolist())
+        options=["TODOS"] + sorted(df_f1['Status'].unique().tolist())
     )
 
     df_f2 = filtrar_status(df_f1, status_selecionado)
