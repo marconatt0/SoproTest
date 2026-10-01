@@ -15,7 +15,7 @@ st.set_page_config(page_title="Painel de Controle - Estações", layout="wide")
 STATUS_RESOLVIDO = ["concluído", "concluido", "fechado"]
 STATUS_CANCELADO = ["cancelado"]
 # Status que não entram em nenhum cálculo nem relatório
-STATUS_EXCLUIDOS = ["aguardando número do chamado", "cancelado pela claro", "fechado pelo mso"]
+STATUS_EXCLUIDOS = ["aguardando número do chamado", "cancelado pela claro", "fechado pelo mso", "pendente claro"]
 
 CATEGORIA_CORES = {"Resolvido": "#2ECC71", "Aberto": "#FFA500", "Cancelado": "#95A5A6"}
 SLA_CORES = {"NO PRAZO": "#2ECC71", "FORA DO PRAZO": "#E74C3C", "SEM SLA": "#BDC3C7"}
@@ -267,9 +267,10 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
         fig.update_layout(xaxis_tickangle=-45)
         st.plotly_chart(fig, width='stretch')
 
-    tend = df_sel.groupby(['Mês Abertura', 'Categoria']).size().reset_index(name='Chamados')
-    fig_t = px.bar(tend, x='Mês Abertura', y='Chamados', color='Categoria', barmode='stack',
-                   color_discrete_map=CATEGORIA_CORES, title='Chamados abertos em cada mês (sem acumular meses anteriores)')
+    tend = df_sel[df_sel['Categoria'] == 'Aberto'].groupby('Mês Abertura').size().reset_index(name='Chamados')
+    fig_t = px.bar(tend, x='Mês Abertura', y='Chamados', text='Chamados', title='Chamados abertos por mês',
+                   color_discrete_sequence=[CATEGORIA_CORES['Aberto']])
+    fig_t.update_xaxes(dtick='M1', tickformat='%m/%Y')
     st.plotly_chart(fig_t, width='stretch')
 
     with st.expander("🔎 Ver lista completa de chamados neste período"):
