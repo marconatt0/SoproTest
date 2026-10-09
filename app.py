@@ -201,8 +201,11 @@ def calcular_score(r):
     return ((0.4 * resol + 0.3 * sla + 0.3 * rapidez) * 100).round(1)
 
 
-def historico_mensal(df):
-    """Abertos x Resolvidos x Cancelados por mês + backlog acumulado e tempo de resolução."""
+def historico_mensal(df, inicio=None, fim=None):
+    """Abertos x Resolvidos x Cancelados por mês + backlog acumulado e tempo de resolução.
+
+    inicio/fim (primeiro dia do mês) limitam o eixo aos meses do período escolhido na barra lateral.
+    """
     abertos = df.groupby('Mês Abertura').size().rename('Abertos')
     res = df[df['Categoria'] == 'Resolvido']
     resolvidos = res.groupby('Mês Fechamento').size().rename('Resolvidos')
@@ -215,7 +218,9 @@ def historico_mensal(df):
     h.index.name = 'Mês'
     if h.empty:
         return h.reset_index()
-    h = h.reindex(pd.date_range(h.index.min(), h.index.max(), freq='MS'))
+    inicio = h.index.min() if inicio is None else inicio
+    fim = h.index.max() if fim is None else fim
+    h = h.reindex(pd.date_range(inicio, fim, freq='MS'))
     h.index.name = 'Mês'
     for c in ['Abertos', 'Resolvidos', 'Cancelados']:
         h[c] = h[c].fillna(0).astype(int)
@@ -395,12 +400,30 @@ def responder_consulta(pergunta, df, data_ref):
     return blocos
 
 
+# Botão flutuante, sempre visível no canto inferior direito, que abre o assistente
+CSS_BOTAO_CONSULTA = """
+<style>
+.st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
+.st-key-botao_consulta button { border-radius: 999px; padding: 0.7rem 1.3rem; font-weight: 600;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
+</style>
+"""
+
+
 @st.fragment
-def aba_consulta(df, data_ref):
-    # Fragmento: cada pergunta atualiza só o chat, sem recalcular os gráficos das outras abas
-    st.subheader("💬 Assistente de Consulta por Estação")
-    st.write("Pergunte se uma estação já tem chamado aberto antes de abrir um novo. A consulta usa a planilha "
-             "inteira, sem os filtros da barra lateral.")
+def botao_consulta(df, data_ref):
+    # Fragmento: abrir a janela não recalcula os gráficos do painel, então ela já abre pronta para uso
+    st.html(CSS_BOTAO_CONSULTA)
+    if st.button("💬 Consultar estação", key="botao_consulta", type="primary",
+                 help="Ver se uma estação já tem chamado aberto"):
+        janela_consulta(df, data_ref)
+
+
+@st.dialog("💬 Consultar Estação", width="large")
+def janela_consulta(df, data_ref):
+    # A janela roda como fragmento: cada pergunta atualiza só o chat, sem recalcular os gráficos
+    st.caption("Veja se uma estação já tem chamado aberto antes de abrir um novo. A consulta usa a planilha "
+               "inteira, sem os filtros da barra lateral.")
 
     if 'chat_consulta' not in st.session_state:
         st.session_state.chat_consulta = [{'papel': 'assistant', 'blocos': [{'texto': "Olá! " + MENSAGEM_AJUDA}]}]
@@ -426,6 +449,118 @@ def aba_consulta(df, data_ref):
 
 
 # ---------------------------------------------------------------------------
+# Seletor de mês/ano em rolagem (wheel picker)
+# ---------------------------------------------------------------------------
+MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho",
+         "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
+
+CSS = """
+.wp { font-family: var(--st-font, sans-serif); color: var(--st-text-color, #31333F); }
+.wp-titulo { font-size: 14px; margin-bottom: 4px; }
+.wp-corpo { position: relative; display: flex; gap: 4px; height: 180px; border-radius: 12px;
+  background: var(--st-secondary-background-color, #f0f2f6); overflow: hidden; user-select: none; }
+.wp-faixa { position: absolute; left: 6px; right: 6px; top: 72px; height: 36px; border-radius: 8px;
+  background: var(--st-background-color, #fff); opacity: .9; pointer-events: none; }
+.wp-col { position: relative; flex: 1; height: 180px; overflow-y: scroll; scroll-snap-type: y mandatory;
+  scrollbar-width: none; -webkit-mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent);
+  mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); }
+.wp-col::-webkit-scrollbar { display: none; }
+.wp-item { height: 36px; line-height: 36px; text-align: center; scroll-snap-align: center;
+  font-size: 16px; opacity: .45; cursor: pointer; transition: opacity .15s, font-size .15s; }
+.wp-item.sel { opacity: 1; font-size: 18px; font-weight: 600; }
+.wp-pad { height: 72px; }
+"""
+
+JS = """
+export default function(component) {
+  const { data, parentElement, setStateValue } = component;
+  const ALT = 36;
+  let raiz = parentElement.querySelector('.wp');
+  if (!raiz) {
+    raiz = document.createElement('div');
+    raiz.className = 'wp';
+    parentElement.appendChild(raiz);
+  }
+  const assinatura = JSON.stringify([data.titulo, data.meses, data.anos]);
+  const valorInicial = data.valor;
+  if (raiz.dataset.assinatura === assinatura && raiz.dataset.valorAtual === valorInicial) {
+    return;  // a roda já mostra esse valor: mantém a posição atual
+  }
+  raiz.dataset.assinatura = assinatura;
+  raiz.dataset.valorAtual = valorInicial;
+  raiz.innerHTML = '';
+
+  const titulo = document.createElement('div');
+  titulo.className = 'wp-titulo';
+  titulo.textContent = data.titulo;
+  raiz.appendChild(titulo);
+
+  const corpo = document.createElement('div');
+  corpo.className = 'wp-corpo';
+  corpo.innerHTML = '<div class="wp-faixa"></div>';
+  raiz.appendChild(corpo);
+
+  let [anoSel, mesSel] = valorInicial.split('-').map(Number);
+  let ultimoEnviado = valorInicial;
+
+  function enviar() {
+    const v = anoSel + '-' + String(mesSel).padStart(2, '0');
+    if (v !== ultimoEnviado) { ultimoEnviado = v; raiz.dataset.valorAtual = v; setStateValue('valor', v); }
+  }
+
+  function criarColuna(rotulos, indiceInicial, aoMudar) {
+    const col = document.createElement('div');
+    col.className = 'wp-col';
+    col.tabIndex = 0;
+    col.innerHTML = '<div class="wp-pad"></div>' +
+      rotulos.map((r, i) => '<div class="wp-item" data-i="' + i + '">' + r + '</div>').join('') +
+      '<div class="wp-pad"></div>';
+    corpo.appendChild(col);
+    const itens = col.querySelectorAll('.wp-item');
+    let atual = indiceInicial;
+    const marcar = (i) => itens.forEach((el, k) => el.classList.toggle('sel', k === i));
+    marcar(atual);
+    requestAnimationFrame(() => { col.scrollTop = atual * ALT; });
+    let timer = null;
+    col.addEventListener('scroll', () => {
+      const i = Math.max(0, Math.min(rotulos.length - 1, Math.round(col.scrollTop / ALT)));
+      marcar(i);
+      clearTimeout(timer);
+      timer = setTimeout(() => { if (i !== atual) { atual = i; aoMudar(i); } }, 250);
+    });
+    itens.forEach((el) => el.addEventListener('click', () => {
+      col.scrollTo({ top: Number(el.dataset.i) * ALT, behavior: 'smooth' });
+    }));
+    col.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+        e.preventDefault();
+        const i = Math.max(0, Math.min(rotulos.length - 1, atual + (e.key === 'ArrowDown' ? 1 : -1)));
+        col.scrollTo({ top: i * ALT, behavior: 'smooth' });
+      }
+    });
+  }
+
+  criarColuna(data.meses, mesSel - 1, (i) => { mesSel = i + 1; enviar(); });
+  criarColuna(data.anos.map(String), Math.max(0, data.anos.indexOf(anoSel)), (i) => { anoSel = data.anos[i]; enviar(); });
+}
+"""
+
+_roda_mes_ano = st.components.v2.component("seletor_mes_ano", css=CSS, js=JS)
+
+
+def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
+    """Duas rodas (mês e ano) no estilo do seletor do celular. Retorna o primeiro dia do mês escolhido."""
+    padrao = valor_inicial.strftime('%Y-%m')
+    # Estado já atualizado pelo navegador nesta execução (evita devolver à roda um valor antigo)
+    estado = st.session_state.get(key)
+    atual = (estado.get('valor') if estado else None) or padrao
+    res = _roda_mes_ano(key=key, data={'titulo': titulo, 'meses': MESES,
+                                       'anos': list(range(ano_min, ano_max + 1)), 'valor': atual},
+                        default={'valor': padrao}, on_valor_change=lambda: None)
+    return pd.Timestamp((res.valor or padrao) + '-01')
+
+
+# ---------------------------------------------------------------------------
 # Interface
 # ---------------------------------------------------------------------------
 st.title("📊 Afunilador de Chamados e Alertas")
@@ -437,16 +572,31 @@ if arquivo_upload:
     df = carregar_dados(arquivo_upload.getvalue())
     data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
 
+    botao_consulta(df, data_ref)
+
     st.sidebar.header("🎯 Funil de Filtros")
 
+    periodo_ini = periodo_fim = None
     if 'Data' in df.columns and df['Data'].notna().any():
-        data_min, data_max = df['Data'].min().date(), df['Data'].max().date()
-        intervalo = st.sidebar.date_input("0. Período de abertura:", value=(data_min, data_max),
-                                          min_value=data_min, max_value=data_max)
-        if isinstance(intervalo, (tuple, list)) and len(intervalo) == 2:
-            df_f0 = df[(df['Data'].dt.date >= intervalo[0]) & (df['Data'].dt.date <= intervalo[1])]
-        else:
-            df_f0 = df
+        mes_min = df['Data'].min().to_period('M').to_timestamp()
+        mes_max = df['Data'].max().to_period('M').to_timestamp()
+        versao = st.session_state.get('periodo_versao', 0)
+
+        st.sidebar.markdown("**0. Período de abertura:**")
+        with st.sidebar:
+            periodo_ini = seletor_mes_ano("De", f'periodo_ini_{versao}', mes_min, mes_min.year, mes_max.year)
+            periodo_fim = seletor_mes_ano("Até", f'periodo_fim_{versao}', mes_max, mes_min.year, mes_max.year)
+        if st.sidebar.button("↺ Todo o período"):
+            st.session_state['periodo_versao'] = versao + 1
+            st.rerun()
+
+        if periodo_ini > periodo_fim:
+            periodo_ini, periodo_fim = periodo_fim, periodo_ini
+            st.sidebar.caption("O mês inicial era posterior ao final; os dois foram invertidos.")
+        periodo_ini, periodo_fim = max(periodo_ini, mes_min), min(periodo_fim, mes_max)
+        st.sidebar.caption(f"Considerando de {periodo_ini.strftime('%m/%Y')} a {periodo_fim.strftime('%m/%Y')}.")
+
+        df_f0 = df[(df['Data'] >= periodo_ini) & (df['Data'] < periodo_fim + pd.DateOffset(months=1))]
     else:
         df_f0 = df
 
@@ -496,9 +646,9 @@ if arquivo_upload:
     st.caption(f"Data de referência da planilha (último chamado aberto): **{data_ref.strftime('%d/%m/%Y')}** · "
                f"{len(df_final)} chamados no filtro atual")
 
-    aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
+    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "📊 Visão Geral", "📈 Histórico de Resolução", "🏢 Eficiência por Empresa",
-        "🧾 Resumo Executivo", "🐦 Ninhos na EV", "🌿 Zeladorias", "💬 Consultar Estação"
+        "🧾 Resumo Executivo", "🐦 Ninhos na EV", "🌿 Zeladorias"
     ])
 
     # ----------------------------------------------------------------- Visão Geral
@@ -583,7 +733,7 @@ if arquivo_upload:
         st.write("Chamados abertos por mês (data de abertura) comparados com os resolvidos e cancelados "
                  "(data de fechamento). O backlog acumulado mostra se a fila está crescendo ou diminuindo.")
 
-        hist = historico_mensal(df_final)
+        hist = historico_mensal(df_final, periodo_ini, periodo_fim)
         if hist.empty:
             st.info("Sem dados suficientes para montar o histórico.")
         else:
@@ -732,6 +882,8 @@ if arquivo_upload:
             if empresas_hist:
                 base_h = df_emp_base[df_emp_base['Empresa'].isin(empresas_hist)]
                 res_h = base_h[base_h['Categoria'] == 'Resolvido']
+                if periodo_ini is not None:
+                    res_h = res_h[res_h['Mês Fechamento'].between(periodo_ini, periodo_fim)]
                 c5, c6 = st.columns(2)
                 with c5:
                     serie = res_h.groupby(['Mês Fechamento', 'Empresa']).size().reset_index(name='Resolvidos')
@@ -763,7 +915,7 @@ if arquivo_upload:
     with aba4:
         st.subheader("🧾 Resumo Executivo")
 
-        hist = historico_mensal(df_final)
+        hist = historico_mensal(df_final, periodo_ini, periodo_fim)
         emp_all = resumo_por_grupo(df_final, 'Empresa', data_ref)
         emp_all = emp_all[emp_all['Total'] >= 20].copy()
         if not emp_all.empty:
@@ -899,6 +1051,3 @@ if arquivo_upload:
             "Zeladoria", 'Greens', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
             'periodo_zel'
         )
-
-    with aba7:
-        aba_consulta(df, data_ref)
