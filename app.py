@@ -1,3 +1,4 @@
+import difflib
 import io
 import re
 import unicodedata
@@ -296,6 +297,135 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
 
 
 # ---------------------------------------------------------------------------
+# Assistente de consulta por estação
+# ---------------------------------------------------------------------------
+COLUNAS_CONSULTA = ['ID Sopro', 'Data', 'Tipo', 'Descrição', 'Empresa', 'Status', 'Dias em aberto']
+MAX_ESTACOES_RESPOSTA = 10
+
+MENSAGEM_AJUDA = (
+    "Digite o código de uma ou mais estações (ex.: **RSBGE02**) ou o ID de um chamado (ex.: **SPR00072339**). "
+    "Também dá para digitar o início do código (ex.: **RSBGE**) para ver todas as estações daquele grupo."
+)
+
+
+def identificar_estacoes(pergunta, estacoes):
+    """Retorna (estações encontradas, sugestões) a partir do texto digitado pelo técnico."""
+    mapa = {str(e).upper(): e for e in estacoes}
+    tokens = [t.upper() for t in re.findall(r'[A-Za-z0-9]+', pergunta) if len(t) >= 4]
+
+    encontradas = [mapa[t] for t in tokens if t in mapa]
+    if encontradas:
+        return list(dict.fromkeys(encontradas)), []
+
+    # Início do código: "RSBGE" -> RSBGE02, RSBGE05...
+    por_prefixo = [e for chave, e in sorted(mapa.items()) for t in tokens if chave.startswith(t)]
+    if por_prefixo:
+        return list(dict.fromkeys(por_prefixo)), []
+
+    sugestoes = []
+    for t in tokens:
+        sugestoes += difflib.get_close_matches(t, list(mapa), n=5, cutoff=0.75)
+    return [], [mapa[s] for s in dict.fromkeys(sugestoes)]
+
+
+def tabela_chamados(chamados, data_ref):
+    t = chamados.sort_values('Data', ascending=False).copy()
+    t['Dias em aberto'] = (data_ref - t['Data']).dt.days
+    t['Data'] = t['Data'].dt.strftime('%d/%m/%Y')
+    return t[[c for c in COLUNAS_CONSULTA if c in t.columns]].reset_index(drop=True)
+
+
+def responder_consulta(pergunta, df, data_ref):
+    """Monta a resposta do assistente como uma lista de blocos {'texto': ..., 'tabela': DataFrame opcional}."""
+    blocos = []
+
+    ids = [i.upper() for i in re.findall(r'SPR\d+', pergunta, flags=re.IGNORECASE)]
+    if ids and 'ID Sopro' in df.columns:
+        achados = df[df['ID Sopro'].astype(str).str.upper().isin(ids)]
+        if achados.empty:
+            blocos.append({'texto': f"Não encontrei o chamado **{', '.join(ids)}** nesta planilha."})
+        for _, c in achados.iterrows():
+            fechamento = c.get('Data Fechamento')
+            fech_txt = f" · fechado em {fechamento.strftime('%d/%m/%Y')}" if pd.notna(fechamento) else ""
+            blocos.append({'texto': f"**{c['ID Sopro']}** · estação **{c['Estação']}** · {c.get('Tipo', '')} — "
+                                    f"{c.get('Descrição', '')} · aberto em {c['Data'].strftime('%d/%m/%Y')} · "
+                                    f"status **{c['Status']}** · {c.get('Empresa', '')}{fech_txt}"})
+        if not re.sub(r'SPR\d+', '', pergunta, flags=re.IGNORECASE).strip():
+            return blocos
+
+    estacoes, sugestoes = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
+    if not estacoes:
+        if blocos:
+            return blocos
+        texto = "Não reconheci nenhuma estação na sua mensagem."
+        if sugestoes:
+            texto += " Você quis dizer: " + ", ".join(f"**{s}**" for s in sugestoes) + "?"
+        return [{'texto': texto + "\n\n" + MENSAGEM_AJUDA}]
+
+    if len(estacoes) > MAX_ESTACOES_RESPOSTA:
+        abertos = df[df['Estação'].isin(estacoes) & (df['Categoria'] == 'Aberto')]
+        resumo = abertos.groupby('Estação').agg(**{
+            'Chamados em aberto': ('Estação', 'size'),
+            'Mais antigo': ('Data', 'min'),
+            'Tipos': ('Tipo', lambda x: ', '.join(sorted(x.unique()))),
+        }).reset_index().sort_values('Chamados em aberto', ascending=False)
+        resumo['Mais antigo'] = resumo['Mais antigo'].dt.strftime('%d/%m/%Y')
+        blocos.append({'texto': f"Encontrei **{len(estacoes)}** estações com esse início de código; "
+                                f"**{len(resumo)}** delas têm chamado em aberto. Digite o código completo "
+                                f"para ver os detalhes de uma estação.",
+                       'tabela': resumo if not resumo.empty else None})
+        return blocos
+
+    for est in estacoes:
+        chamados = df[df['Estação'] == est]
+        abertos = chamados[chamados['Categoria'] == 'Aberto']
+        if not abertos.empty:
+            tipos = ', '.join(sorted(abertos['Tipo'].unique())) if 'Tipo' in abertos else ''
+            blocos.append({'texto': f"🔴 A estação **{est}** tem **{len(abertos)}** chamado(s) em aberto "
+                                    f"({tipos}):",
+                           'tabela': tabela_chamados(abertos, data_ref)})
+        else:
+            texto = f"🟢 A estação **{est}** não tem chamado em aberto."
+            if not chamados.empty:
+                ultimo = chamados.sort_values('Data').iloc[-1]
+                texto += (f" Último chamado: **{ultimo['ID Sopro']}** ({ultimo.get('Tipo', '')} — "
+                          f"{ultimo.get('Descrição', '')}), aberto em {ultimo['Data'].strftime('%d/%m/%Y')}, "
+                          f"status {ultimo['Status']}.")
+            blocos.append({'texto': texto})
+    return blocos
+
+
+@st.fragment
+def aba_consulta(df, data_ref):
+    # Fragmento: cada pergunta atualiza só o chat, sem recalcular os gráficos das outras abas
+    st.subheader("💬 Assistente de Consulta por Estação")
+    st.write("Pergunte se uma estação já tem chamado aberto antes de abrir um novo. A consulta usa a planilha "
+             "inteira, sem os filtros da barra lateral.")
+
+    if 'chat_consulta' not in st.session_state:
+        st.session_state.chat_consulta = [{'papel': 'assistant', 'blocos': [{'texto': "Olá! " + MENSAGEM_AJUDA}]}]
+
+    historico = st.container()
+    if st.button("🗑️ Limpar conversa"):
+        del st.session_state.chat_consulta
+        st.rerun(scope='fragment')
+
+    pergunta = st.chat_input("Digite a estação ou o ID do chamado (ex.: RSBGE02)")
+    if pergunta:
+        st.session_state.chat_consulta.append({'papel': 'user', 'blocos': [{'texto': pergunta}]})
+        st.session_state.chat_consulta.append({'papel': 'assistant',
+                                               'blocos': responder_consulta(pergunta, df, data_ref)})
+
+    with historico:
+        for msg in st.session_state.chat_consulta:
+            with st.chat_message(msg['papel']):
+                for bloco in msg['blocos']:
+                    st.markdown(bloco['texto'])
+                    if bloco.get('tabela') is not None:
+                        st.dataframe(bloco['tabela'], width='stretch', hide_index=True)
+
+
+# ---------------------------------------------------------------------------
 # Interface
 # ---------------------------------------------------------------------------
 st.title("📊 Afunilador de Chamados e Alertas")
@@ -366,9 +496,9 @@ if arquivo_upload:
     st.caption(f"Data de referência da planilha (último chamado aberto): **{data_ref.strftime('%d/%m/%Y')}** · "
                f"{len(df_final)} chamados no filtro atual")
 
-    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
+    aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
         "📊 Visão Geral", "📈 Histórico de Resolução", "🏢 Eficiência por Empresa",
-        "🧾 Resumo Executivo", "🐦 Ninhos na EV", "🌿 Zeladorias"
+        "🧾 Resumo Executivo", "🐦 Ninhos na EV", "🌿 Zeladorias", "💬 Consultar Estação"
     ])
 
     # ----------------------------------------------------------------- Visão Geral
@@ -769,3 +899,6 @@ if arquivo_upload:
             "Zeladoria", 'Greens', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
             'periodo_zel'
         )
+
+    with aba7:
+        aba_consulta(df, data_ref)
