@@ -400,52 +400,111 @@ def responder_consulta(pergunta, df, data_ref):
     return blocos
 
 
-# Botão flutuante, sempre visível no canto inferior direito, que abre o assistente
+# Botão flutuante, sempre visível no canto inferior direito, que abre o assistente em tela cheia
 CSS_BOTAO_CONSULTA = """
 <style>
 .st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
 .st-key-botao_consulta button { border-radius: 999px; padding: 0.7rem 1.3rem; font-weight: 600;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
+@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: 1rem; } }
 </style>
 """
 
+# Tela cheia do assistente: esconde barra lateral, cabeçalho e painel; deixa só a seta de voltar e o chat
+CSS_TELA_CONSULTA = """
+<style>
+[data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"], [data-testid="stHeader"],
+.st-key-cabecalho_painel { display: none !important; }
+[data-testid="stMainBlockContainer"] { padding-top: 4.5rem !important; }
+.st-key-topo_consulta { position: fixed; top: 0; left: 0; right: 0; width: auto !important; z-index: 990;
+  padding: 0.5rem 1rem; background: var(--st-background-color, #ffffff);
+  border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
+.st-key-voltar_consulta button { border: none; background: transparent; padding: 0.1rem 0.6rem; min-height: 0; }
+.st-key-voltar_consulta button p { font-size: 2rem; line-height: 1; }
+.st-key-topo_consulta h3 { margin: 0; padding: 0; }
+[data-testid="stChatMessage"] { scroll-margin-top: 4.5rem; }
+/* Fonte de 16px no campo de texto: abaixo disso o iPhone dá zoom na página ao focar no campo */
+[data-testid="stChatInput"] textarea { font-size: 16px !important; }
+</style>
+"""
+
+# Ajustes para o teclado do celular:
+# - Android: com interactive-widget=resizes-content, o teclado encolhe a página e o campo fica acima dele
+# - iPhone: acompanha a área visível (visualViewport) e sobe o campo de texto a altura do teclado
+# - depois de cada resposta, rola até a última mensagem
+JS_TECLADO = """
+export default function(component) {
+  const meta = document.querySelector('meta[name="viewport"]');
+  if (meta && !meta.content.includes('interactive-widget')) {
+    meta.content += ', interactive-widget=resizes-content';
+  }
+  const vv = window.visualViewport;
+  const ajustar = () => {
+    const fundo = document.querySelector('[data-testid="stBottom"]');
+    if (!fundo || !vv) return;
+    const teclado = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
+    fundo.style.transform = teclado > 0 ? 'translateY(-' + teclado + 'px)' : '';
+  };
+  if (vv && !window.__consultaTeclado) {
+    window.__consultaTeclado = true;
+    vv.addEventListener('resize', ajustar);
+    vv.addEventListener('scroll', ajustar);
+  }
+  ajustar();
+  // Mostra a última pergunta no topo da tela, com a resposta logo abaixo, para ler desde o começo.
+  // Repete por pouco mais de 1 s porque o Streamlit rola sozinho para o fim enquanto as tabelas carregam.
+  const mostrarUltimaPergunta = () => {
+    const msgs = document.querySelectorAll('[data-testid="stChatMessage"]');
+    if (msgs.length) msgs[Math.max(0, msgs.length - 2)].scrollIntoView({ block: 'start' });
+  };
+  [150, 500, 900, 1400].forEach((ms) => setTimeout(mostrarUltimaPergunta, ms));
+}
+"""
+
+_ajuste_teclado = st.components.v2.component("ajuste_teclado_consulta", js=JS_TECLADO)
+
 
 @st.fragment
-def botao_consulta(df, data_ref):
-    # Fragmento: abrir a janela não recalcula os gráficos do painel, então ela já abre pronta para uso
+def botao_consulta():
+    # Fragmento: o clique só marca o modo de consulta e recarrega a página já na tela do chat
     st.html(CSS_BOTAO_CONSULTA)
     if st.button("💬 Consultar estação", key="botao_consulta", type="primary",
                  help="Ver se uma estação já tem chamado aberto"):
-        janela_consulta(df, data_ref)
+        st.session_state.modo_consulta = True
+        st.rerun()
 
 
-@st.dialog("💬 Consultar Estação", width="large")
-def janela_consulta(df, data_ref):
-    # A janela roda como fragmento: cada pergunta atualiza só o chat, sem recalcular os gráficos
-    st.caption("Veja se uma estação já tem chamado aberto antes de abrir um novo. A consulta usa a planilha "
-               "inteira, sem os filtros da barra lateral.")
+def tela_consulta(df, data_ref):
+    """Assistente em tela cheia, com o campo de texto preso no rodapé (fica acima do teclado no celular)."""
+    st.html(CSS_TELA_CONSULTA)
+
+    with st.container(key="topo_consulta", horizontal=True, vertical_alignment="center"):
+        if st.button("←", key="voltar_consulta", help="Voltar ao painel"):
+            st.session_state.modo_consulta = False
+            st.rerun()
+        st.subheader("Consultar Estação")
 
     if 'chat_consulta' not in st.session_state:
         st.session_state.chat_consulta = [{'papel': 'assistant', 'blocos': [{'texto': "Olá! " + MENSAGEM_AJUDA}]}]
 
-    historico = st.container()
-    if st.button("🗑️ Limpar conversa"):
-        del st.session_state.chat_consulta
-        st.rerun(scope='fragment')
-
-    pergunta = st.chat_input("Digite a estação ou o ID do chamado (ex.: RSBGE02)")
+    pergunta = st.chat_input("Estação ou ID do chamado")
     if pergunta:
         st.session_state.chat_consulta.append({'papel': 'user', 'blocos': [{'texto': pergunta}]})
         st.session_state.chat_consulta.append({'papel': 'assistant',
                                                'blocos': responder_consulta(pergunta, df, data_ref)})
 
-    with historico:
-        for msg in st.session_state.chat_consulta:
-            with st.chat_message(msg['papel']):
-                for bloco in msg['blocos']:
-                    st.markdown(bloco['texto'])
-                    if bloco.get('tabela') is not None:
-                        st.dataframe(bloco['tabela'], width='stretch', hide_index=True)
+    for msg in st.session_state.chat_consulta:
+        with st.chat_message(msg['papel']):
+            for bloco in msg['blocos']:
+                st.markdown(bloco['texto'])
+                if bloco.get('tabela') is not None:
+                    st.dataframe(bloco['tabela'], width='stretch', hide_index=True)
+
+    if len(st.session_state.chat_consulta) > 1 and st.button("🗑️ Limpar conversa"):
+        del st.session_state.chat_consulta
+        st.rerun()
+
+    _ajuste_teclado(key="ajuste_teclado", data={'mensagens': len(st.session_state.chat_consulta)})
 
 
 # ---------------------------------------------------------------------------
@@ -563,16 +622,19 @@ def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
 # ---------------------------------------------------------------------------
 # Interface
 # ---------------------------------------------------------------------------
-st.title("📊 Afunilador de Chamados e Alertas")
-st.write("Converta o arquivo extraído do portal para .xlsx e suba aqui")
+modo_consulta = st.session_state.get('modo_consulta', False)
 
-arquivo_upload = st.file_uploader("Suba o arquivo Excel aqui", type=["xlsx", "xls"])
+with st.container(key="cabecalho_painel"):
+    st.title("📊 Afunilador de Chamados e Alertas")
+    st.write("Converta o arquivo extraído do portal para .xlsx e suba aqui")
+    arquivo_upload = st.file_uploader("Suba o arquivo Excel aqui", type=["xlsx", "xls"])
 
 if arquivo_upload:
     df = carregar_dados(arquivo_upload.getvalue())
     data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
 
-    botao_consulta(df, data_ref)
+    if not modo_consulta:
+        botao_consulta()
 
     st.sidebar.header("🎯 Funil de Filtros")
 
@@ -638,6 +700,11 @@ if arquivo_upload:
     )
 
     df_final = df_f4[df_f4['Estação'].isin(estacoes_selecionadas)] if estacoes_selecionadas else df_f4
+
+    # O assistente é desenhado depois dos filtros (escondidos), para que eles não percam a seleção
+    if modo_consulta:
+        tela_consulta(df, data_ref)
+        st.stop()
 
     if df_final.empty:
         st.warning("Nenhum chamado encontrado com os filtros selecionados.")
