@@ -400,12 +400,30 @@ def responder_consulta(pergunta, df, data_ref):
     return blocos
 
 
+# Botão flutuante, sempre visível no canto inferior direito, que abre o assistente
+CSS_BOTAO_CONSULTA = """
+<style>
+.st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
+.st-key-botao_consulta button { border-radius: 999px; padding: 0.7rem 1.3rem; font-weight: 600;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
+</style>
+"""
+
+
 @st.fragment
-def aba_consulta(df, data_ref):
-    # Fragmento: cada pergunta atualiza só o chat, sem recalcular os gráficos das outras abas
-    st.subheader("💬 Assistente de Consulta por Estação")
-    st.write("Pergunte se uma estação já tem chamado aberto antes de abrir um novo. A consulta usa a planilha "
-             "inteira, sem os filtros da barra lateral.")
+def botao_consulta(df, data_ref):
+    # Fragmento: abrir a janela não recalcula os gráficos do painel, então ela já abre pronta para uso
+    st.html(CSS_BOTAO_CONSULTA)
+    if st.button("💬 Consultar estação", key="botao_consulta", type="primary",
+                 help="Ver se uma estação já tem chamado aberto"):
+        janela_consulta(df, data_ref)
+
+
+@st.dialog("💬 Consultar Estação", width="large")
+def janela_consulta(df, data_ref):
+    # A janela roda como fragmento: cada pergunta atualiza só o chat, sem recalcular os gráficos
+    st.caption("Veja se uma estação já tem chamado aberto antes de abrir um novo. A consulta usa a planilha "
+               "inteira, sem os filtros da barra lateral.")
 
     if 'chat_consulta' not in st.session_state:
         st.session_state.chat_consulta = [{'papel': 'assistant', 'blocos': [{'texto': "Olá! " + MENSAGEM_AJUDA}]}]
@@ -554,6 +572,8 @@ if arquivo_upload:
     df = carregar_dados(arquivo_upload.getvalue())
     data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
 
+    botao_consulta(df, data_ref)
+
     st.sidebar.header("🎯 Funil de Filtros")
 
     periodo_ini = periodo_fim = None
@@ -626,9 +646,9 @@ if arquivo_upload:
     st.caption(f"Data de referência da planilha (último chamado aberto): **{data_ref.strftime('%d/%m/%Y')}** · "
                f"{len(df_final)} chamados no filtro atual")
 
-    aba1, aba2, aba3, aba4, aba5, aba6, aba7 = st.tabs([
+    aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "📊 Visão Geral", "📈 Histórico de Resolução", "🏢 Eficiência por Empresa",
-        "🧾 Resumo Executivo", "🐦 Ninhos na EV", "🌿 Zeladorias", "💬 Consultar Estação"
+        "🧾 Resumo Executivo", "🐦 Ninhos na EV", "🌿 Zeladorias"
     ])
 
     # ----------------------------------------------------------------- Visão Geral
@@ -1031,6 +1051,3 @@ if arquivo_upload:
             "Zeladoria", 'Greens', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
             'periodo_zel'
         )
-
-    with aba7:
-        aba_consulta(df, data_ref)
