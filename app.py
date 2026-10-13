@@ -508,115 +508,22 @@ def tela_consulta(df, data_ref):
 
 
 # ---------------------------------------------------------------------------
-# Seletor de mês/ano em rolagem (wheel picker)
+# Seletor de mês/ano: duas listas suspensas lado a lado
 # ---------------------------------------------------------------------------
 MESES = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho",
          "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
 
-CSS = """
-.wp { font-family: var(--st-font, sans-serif); color: var(--st-text-color, #31333F); }
-.wp-titulo { font-size: 14px; margin-bottom: 4px; }
-.wp-corpo { position: relative; display: flex; gap: 4px; height: 180px; border-radius: 12px;
-  background: var(--st-secondary-background-color, #f0f2f6); overflow: hidden; user-select: none; }
-.wp-faixa { position: absolute; left: 6px; right: 6px; top: 72px; height: 36px; border-radius: 8px;
-  background: var(--st-background-color, #fff); opacity: .9; pointer-events: none; }
-.wp-col { position: relative; flex: 1; height: 180px; overflow-y: scroll; scroll-snap-type: y mandatory;
-  scrollbar-width: none; -webkit-mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent);
-  mask-image: linear-gradient(transparent, #000 35%, #000 65%, transparent); }
-.wp-col::-webkit-scrollbar { display: none; }
-.wp-item { height: 36px; line-height: 36px; text-align: center; scroll-snap-align: center;
-  font-size: 16px; opacity: .45; cursor: pointer; transition: opacity .15s, font-size .15s; }
-.wp-item.sel { opacity: 1; font-size: 18px; font-weight: 600; }
-.wp-pad { height: 72px; }
-"""
-
-JS = """
-export default function(component) {
-  const { data, parentElement, setStateValue } = component;
-  const ALT = 36;
-  let raiz = parentElement.querySelector('.wp');
-  if (!raiz) {
-    raiz = document.createElement('div');
-    raiz.className = 'wp';
-    parentElement.appendChild(raiz);
-  }
-  const assinatura = JSON.stringify([data.titulo, data.meses, data.anos]);
-  const valorInicial = data.valor;
-  if (raiz.dataset.assinatura === assinatura && raiz.dataset.valorAtual === valorInicial) {
-    return;  // a roda já mostra esse valor: mantém a posição atual
-  }
-  raiz.dataset.assinatura = assinatura;
-  raiz.dataset.valorAtual = valorInicial;
-  raiz.innerHTML = '';
-
-  const titulo = document.createElement('div');
-  titulo.className = 'wp-titulo';
-  titulo.textContent = data.titulo;
-  raiz.appendChild(titulo);
-
-  const corpo = document.createElement('div');
-  corpo.className = 'wp-corpo';
-  corpo.innerHTML = '<div class="wp-faixa"></div>';
-  raiz.appendChild(corpo);
-
-  let [anoSel, mesSel] = valorInicial.split('-').map(Number);
-  let ultimoEnviado = valorInicial;
-
-  function enviar() {
-    const v = anoSel + '-' + String(mesSel).padStart(2, '0');
-    if (v !== ultimoEnviado) { ultimoEnviado = v; raiz.dataset.valorAtual = v; setStateValue('valor', v); }
-  }
-
-  function criarColuna(rotulos, indiceInicial, aoMudar) {
-    const col = document.createElement('div');
-    col.className = 'wp-col';
-    col.tabIndex = 0;
-    col.innerHTML = '<div class="wp-pad"></div>' +
-      rotulos.map((r, i) => '<div class="wp-item" data-i="' + i + '">' + r + '</div>').join('') +
-      '<div class="wp-pad"></div>';
-    corpo.appendChild(col);
-    const itens = col.querySelectorAll('.wp-item');
-    let atual = indiceInicial;
-    const marcar = (i) => itens.forEach((el, k) => el.classList.toggle('sel', k === i));
-    marcar(atual);
-    requestAnimationFrame(() => { col.scrollTop = atual * ALT; });
-    let timer = null;
-    col.addEventListener('scroll', () => {
-      const i = Math.max(0, Math.min(rotulos.length - 1, Math.round(col.scrollTop / ALT)));
-      marcar(i);
-      clearTimeout(timer);
-      timer = setTimeout(() => { if (i !== atual) { atual = i; aoMudar(i); } }, 250);
-    });
-    itens.forEach((el) => el.addEventListener('click', () => {
-      col.scrollTo({ top: Number(el.dataset.i) * ALT, behavior: 'smooth' });
-    }));
-    col.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        e.preventDefault();
-        const i = Math.max(0, Math.min(rotulos.length - 1, atual + (e.key === 'ArrowDown' ? 1 : -1)));
-        col.scrollTo({ top: i * ALT, behavior: 'smooth' });
-      }
-    });
-  }
-
-  criarColuna(data.meses, mesSel - 1, (i) => { mesSel = i + 1; enviar(); });
-  criarColuna(data.anos.map(String), Math.max(0, data.anos.indexOf(anoSel)), (i) => { anoSel = data.anos[i]; enviar(); });
-}
-"""
-
-_roda_mes_ano = st.components.v2.component("seletor_mes_ano", css=CSS, js=JS)
-
 
 def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
-    """Duas rodas (mês e ano) no estilo do seletor do celular. Retorna o primeiro dia do mês escolhido."""
-    padrao = valor_inicial.strftime('%Y-%m')
-    # Estado já atualizado pelo navegador nesta execução (evita devolver à roda um valor antigo)
-    estado = st.session_state.get(key)
-    atual = (estado.get('valor') if estado else None) or padrao
-    res = _roda_mes_ano(key=key, data={'titulo': titulo, 'meses': MESES,
-                                       'anos': list(range(ano_min, ano_max + 1)), 'valor': atual},
-                        default={'valor': padrao}, on_valor_change=lambda: None)
-    return pd.Timestamp((res.valor or padrao) + '-01')
+    """Listas suspensas de mês e ano lado a lado. Retorna o primeiro dia do mês escolhido."""
+    anos = list(range(ano_min, ano_max + 1))
+    st.caption(titulo)
+    col_mes, col_ano = st.columns([3, 2])
+    mes = col_mes.selectbox(f"Mês ({titulo})", MESES, index=valor_inicial.month - 1,
+                            key=f'{key}_mes', label_visibility="collapsed")
+    ano = col_ano.selectbox(f"Ano ({titulo})", anos, index=anos.index(valor_inicial.year),
+                            key=f'{key}_ano', label_visibility="collapsed")
+    return pd.Timestamp(year=ano, month=MESES.index(mes) + 1, day=1)
 
 
 # ---------------------------------------------------------------------------
