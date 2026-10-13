@@ -1,0 +1,7 @@
+[theme]
+# Tema fixo claro
+base = "light"
+
+[client]
+# Esconde o menu de configurações (inclusive a troca de tema claro/escuro) para quem usa o app
+toolbarMode = "minimal"
