@@ -1,7 +1,10 @@
+import datetime as dt
 import difflib
 import io
 import re
 import unicodedata
+import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 
 import streamlit as st
 import pandas as pd
@@ -48,25 +51,45 @@ def categorizar_status(status):
     return "Aberto"
 
 
+CORES_NOMEADAS = {'red': 'FF0000', 'green': '008000', 'lime': '00FF00', 'darkgreen': '006400',
+                  'darkred': '8B0000', 'crimson': 'DC143C', 'forestgreen': '228B22'}
+
+
+def classificar_cor(cor_hex):
+    """Converte a cor da bolinha de SLA (hex, ex.: 'FFFF0000' ou '#00B050') em NO PRAZO / FORA DO PRAZO."""
+    if not cor_hex:
+        return "SEM SLA"
+    cor_hex = CORES_NOMEADAS.get(str(cor_hex).strip().lower(), str(cor_hex)).upper().lstrip('#')
+    # Se a cor em HEX (RGB) tiver código de Verde (usado pelo Excel)
+    if "00B050" in cor_hex or "00FF00" in cor_hex or "2ECC71" in cor_hex or "008000" in cor_hex:
+        return "NO PRAZO"
+    # Se a cor tiver código de Vermelho
+    if "FF0000" in cor_hex or "C00000" in cor_hex or "FF4500" in cor_hex or "E74C3C" in cor_hex:
+        return "FORA DO PRAZO"
+    # Outros tons: decide pelo canal dominante
+    if re.fullmatch(r'[0-9A-F]{6}|[0-9A-F]{8}', cor_hex):
+        r, g, b = (int(cor_hex[-6:][i:i + 2], 16) for i in (0, 2, 4))
+        if g >= 100 and g > r * 1.3 and g > b * 1.3:
+            return "NO PRAZO"
+        if r >= 150 and r > g * 1.8 and r > b * 1.8:
+            return "FORA DO PRAZO"
+    return "SEM SLA"
+
+
 def cor_sla(cell):
     cor_hex = None
     if cell.font and cell.font.color and cell.font.color.type == 'rgb':
         cor_hex = str(cell.font.color.rgb).upper()
     elif cell.fill and cell.fill.fgColor and cell.fill.fgColor.type == 'rgb':
         cor_hex = str(cell.fill.fgColor.rgb).upper()
-
-    if cor_hex:
-        # Se a cor em HEX (RGB) tiver código de Verde (usado pelo Excel)
-        if "00B050" in cor_hex or "00FF00" in cor_hex or "2ECC71" in cor_hex or "008000" in cor_hex:
-            return "NO PRAZO"
-        # Se a cor tiver código de Vermelho
-        if "FF0000" in cor_hex or "C00000" in cor_hex or "FF4500" in cor_hex or "E74C3C" in cor_hex:
-            return "FORA DO PRAZO"
-    return "SEM SLA"
+    return classificar_cor(cor_hex)
 
 
-@st.cache_data(show_spinner="Lendo planilha...")
-def carregar_dados(conteudo):
+# ---------------------------------------------------------------------------
+# Leitura da planilha: .xlsx e os três formatos que podem vir com extensão .xls
+# ---------------------------------------------------------------------------
+def _ler_xlsx(conteudo):
+    """Retorna (DataFrame, lista com o SLA de cada linha)."""
     # 1. O pandas lê apenas o texto (onde aparece o ●)
     df = pd.read_excel(io.BytesIO(conteudo), header=1)
 
@@ -86,6 +109,225 @@ def carregar_dados(conteudo):
             status_sla_cores.append(cor_sla(ws.cell(row=row_idx, column=sla_col_idx)))
         else:
             status_sla_cores.append("SEM SLA")
+    return df, status_sla_cores
+
+
+def _grade_para_dataframe(valores, cores):
+    """Monta o DataFrame a partir de uma grade (lista de linhas) e da cor de cada célula.
+
+    O cabeçalho é a linha que tem a coluna "Estação"; o SLA vem da cor da coluna "SLA".
+    """
+    linha_cab = next((i for i, linha in enumerate(valores[:20])
+                      if any(normalizar_texto(v) == 'estacao' for v in linha if v is not None)), None)
+    if linha_cab is None:
+        raise ValueError("Não encontrei a linha de cabeçalho (coluna 'Estação') na planilha.")
+
+    nomes, vistos = [], {}
+    for i, v in enumerate(valores[linha_cab]):
+        nome = str(v).strip() if v not in (None, '') else f'Coluna {i + 1}'
+        if nome in vistos:  # mesmo padrão do pandas: a 2ª coluna "Data" vira "Data.1"
+            vistos[nome] += 1
+            nome = f'{nome}.{vistos[nome]}'
+        else:
+            vistos[nome] = 0
+        nomes.append(nome)
+
+    col_sla = next((i for i, n in enumerate(nomes) if normalizar_texto(n) == 'sla'), None)
+    linhas = valores[linha_cab + 1:]
+    largura = len(nomes)
+    linhas = [(list(l) + [None] * largura)[:largura] for l in linhas]
+    df = pd.DataFrame(linhas, columns=nomes).replace({'': None})
+
+    sla = []
+    for i in range(linha_cab + 1, len(valores)):
+        linha_cores = cores[i] if i < len(cores) else []
+        cor = linha_cores[col_sla] if col_sla is not None and col_sla < len(linha_cores) else None
+        sla.append(classificar_cor(cor))
+
+    # Datas que chegam como texto (HTML/XML) ficam no formato dia/mês/ano
+    for col in df.columns:
+        textos = df[col].map(lambda v: isinstance(v, str))
+        if normalizar_texto(col).startswith('data') and textos.any():
+            convertidas = pd.to_datetime(df.loc[textos, col], dayfirst=True, errors='coerce', format='mixed')
+            df[col] = df[col].where(~textos, convertidas)
+    return df, sla
+
+
+def _ler_xls_binario(conteudo):
+    """.xls do Excel 97-2003 (formato binário). A cor vem da fonte ou do preenchimento da célula."""
+    import xlrd
+    livro = xlrd.open_workbook(file_contents=conteudo, formatting_info=True)
+    folha = livro.sheet_by_index(0)
+
+    def cor_rgb(indice):
+        rgb = livro.colour_map.get(indice)
+        return '%02X%02X%02X' % rgb if rgb else None
+
+    valores, cores = [], []
+    for r in range(folha.nrows):
+        linha_v, linha_c = [], []
+        for c in range(folha.ncols):
+            celula = folha.cell(r, c)
+            if celula.ctype == xlrd.XL_CELL_DATE:
+                valor = xlrd.xldate_as_datetime(celula.value, livro.datemode)
+            elif celula.ctype in (xlrd.XL_CELL_EMPTY, xlrd.XL_CELL_BLANK):
+                valor = None
+            else:
+                valor = celula.value
+            xf = livro.xf_list[folha.cell_xf_index(r, c)]
+            cor = cor_rgb(livro.font_list[xf.font_index].colour_index)
+            if classificar_cor(cor) == "SEM SLA":
+                cor = cor_rgb(xf.background.pattern_colour_index) or cor
+            linha_v.append(valor)
+            linha_c.append(cor)
+        valores.append(linha_v)
+        cores.append(linha_c)
+    return _grade_para_dataframe(valores, cores)
+
+
+class _LeitorTabelaHTML(HTMLParser):
+    """Lê a primeira tabela de um .xls que na verdade é uma página HTML (comum em exportações de portais)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.estilos_classe = {}
+        self.linhas, self.cores = [], []
+        self._linha = self._cores_linha = None
+        self._celula = None
+        self._em_style = False
+        self._css = ''
+        self._tabelas = 0
+        self._cor_fonte = []
+
+    @staticmethod
+    def _cor_do_estilo(estilo):
+        m = re.search(r'(?<![-\w])color\s*:\s*([#\w]+)', estilo or '', re.IGNORECASE)
+        return m.group(1) if m else None
+
+    def handle_starttag(self, tag, attrs):
+        a = dict(attrs)
+        if tag == 'style':
+            self._em_style = True
+        elif tag == 'table':
+            self._tabelas += 1
+        elif self._tabelas != 1:
+            return
+        elif tag == 'tr':
+            self._linha, self._cores_linha = [], []
+        elif tag in ('td', 'th') and self._linha is not None:
+            cor = self._cor_do_estilo(a.get('style'))
+            for classe in (a.get('class') or '').split():
+                cor = cor or self.estilos_classe.get(classe)
+            self._celula = {'texto': [], 'cor': cor, 'span': int(a.get('colspan') or 1)}
+        elif tag == 'font' and self._celula is not None:
+            self._celula['cor'] = a.get('color') or self._cor_do_estilo(a.get('style')) or self._celula['cor']
+        elif tag in ('span', 'b', 'div') and self._celula is not None:
+            self._celula['cor'] = self._cor_do_estilo(a.get('style')) or self._celula['cor']
+        elif tag == 'br' and self._celula is not None:
+            self._celula['texto'].append(' ')
+
+    def handle_endtag(self, tag):
+        if tag == 'style':
+            self._em_style = False
+            for seletor, corpo in re.findall(r'\.([\w-]+)\s*\{([^}]*)\}', self._css):
+                cor = self._cor_do_estilo(corpo)
+                if cor:
+                    self.estilos_classe[seletor] = cor
+        elif self._tabelas != 1:
+            return
+        elif tag in ('td', 'th') and self._celula is not None:
+            texto = re.sub(r'\s+', ' ', ''.join(self._celula['texto'])).strip()
+            for k in range(self._celula['span']):
+                self._linha.append(texto if k == 0 else None)
+                self._cores_linha.append(self._celula['cor'])
+            self._celula = None
+        elif tag == 'tr' and self._linha is not None:
+            self.linhas.append(self._linha)
+            self.cores.append(self._cores_linha)
+            self._linha = None
+        elif tag == 'table':
+            self._tabelas += 1  # só a primeira tabela interessa
+
+    def handle_data(self, data):
+        if self._em_style:
+            self._css += data
+        elif self._celula is not None:
+            self._celula['texto'].append(data)
+
+
+def _ler_xls_html(texto):
+    leitor = _LeitorTabelaHTML()
+    leitor.feed(texto)
+    valores = [[(v if v != '' else None) for v in linha] for linha in leitor.linhas]
+    return _grade_para_dataframe(valores, leitor.cores)
+
+
+def _ler_xls_xml(texto):
+    """.xls no formato "Planilha XML 2003" do Excel (SpreadsheetML)."""
+    ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+    q = lambda nome: '{urn:schemas-microsoft-com:office:spreadsheet}' + nome
+    raiz = ET.fromstring(texto.encode('utf-8') if isinstance(texto, str) else texto)
+
+    cor_estilo = {}
+    for estilo in raiz.iter(q('Style')):
+        fonte, interior = estilo.find('ss:Font', ns), estilo.find('ss:Interior', ns)
+        cor = fonte.get(q('Color')) if fonte is not None else None
+        if classificar_cor(cor) == "SEM SLA" and interior is not None:
+            cor = interior.get(q('Color')) or cor
+        cor_estilo[estilo.get(q('ID'))] = cor
+
+    tabela = next(raiz.iter(q('Table')))
+    valores, cores = [], []
+    for linha in tabela.iter(q('Row')):
+        indice_linha = linha.get(q('Index'))
+        while indice_linha and len(valores) < int(indice_linha) - 1:
+            valores.append([])
+            cores.append([])
+        lv, lc = [], []
+        for celula in linha.findall('ss:Cell', ns):
+            indice = celula.get(q('Index'))
+            while indice and len(lv) < int(indice) - 1:
+                lv.append(None)
+                lc.append(None)
+            dado = celula.find('ss:Data', ns)
+            valor = ''.join(dado.itertext()).strip() if dado is not None else None
+            if dado is not None and dado.get(q('Type')) == 'Number':
+                valor = float(valor)
+            elif dado is not None and dado.get(q('Type')) == 'DateTime':
+                try:
+                    valor = dt.datetime.fromisoformat(valor)
+                except ValueError:
+                    valor = pd.to_datetime(valor, errors='coerce')
+            extra = int(celula.get(q('MergeAcross')) or 0)
+            lv += [valor or None] + [None] * extra
+            lc += [cor_estilo.get(celula.get(q('StyleID')))] * (1 + extra)
+        valores.append(lv)
+        cores.append(lc)
+    return _grade_para_dataframe(valores, cores)
+
+
+def ler_planilha(conteudo):
+    """Identifica o formato pelo conteúdo (não pela extensão) e retorna (DataFrame, SLA de cada linha)."""
+    if conteudo[:4] == b'PK\x03\x04':
+        return _ler_xlsx(conteudo)                      # .xlsx
+    if conteudo[:8] == b'\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1':
+        return _ler_xls_binario(conteudo)               # .xls do Excel 97-2003
+    for codificacao in ('utf-8-sig', 'utf-16', 'cp1252'):
+        try:
+            texto = conteudo.decode(codificacao)
+        except UnicodeDecodeError:
+            continue
+        inicio = texto[:5000].lower()
+        if 'urn:schemas-microsoft-com:office:spreadsheet' in inicio and '<workbook' in inicio:
+            return _ler_xls_xml(texto)                  # Planilha XML 2003 salva como .xls
+        if '<table' in texto.lower():
+            return _ler_xls_html(texto)                 # Página HTML salva como .xls
+    raise ValueError("Formato de arquivo não reconhecido. Envie a planilha em .xls ou .xlsx.")
+
+
+@st.cache_data(show_spinner="Lendo planilha...")
+def carregar_dados(conteudo):
+    df, status_sla_cores = ler_planilha(conteudo)
 
     status_sla_cores = status_sla_cores[:len(df)]
     if len(status_sla_cores) < len(df):
@@ -536,11 +778,15 @@ modo_consulta = st.session_state.get('modo_consulta', False)
 
 with st.container(key="cabecalho_painel"):
     st.title("📊 Afunilador de Chamados e Alertas")
-    st.write("Converta o arquivo extraído do portal para .xlsx e suba aqui")
+    st.write("Suba aqui o arquivo extraído do portal, em .xls ou .xlsx")
     arquivo_upload = st.file_uploader("Suba o arquivo Excel aqui", type=["xlsx", "xls"])
 
 if arquivo_upload:
-    df = carregar_dados(arquivo_upload.getvalue())
+    try:
+        df = carregar_dados(arquivo_upload.getvalue())
+    except Exception as erro:
+        st.error(f"Não consegui ler o arquivo **{arquivo_upload.name}**: {erro}")
+        st.stop()
     data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
 
     if not modo_consulta:
