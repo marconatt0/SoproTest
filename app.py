@@ -112,6 +112,11 @@ def _ler_xlsx(conteudo):
     return df, status_sla_cores
 
 
+MESES_ABREVIADOS = {'jan': '01', 'fev': '02', 'mar': '03', 'abr': '04', 'mai': '05', 'jun': '06',
+                    'jul': '07', 'ago': '08', 'set': '09', 'out': '10', 'nov': '11', 'dez': '12'}
+MESES_ABREVIADOS_RE = re.compile(r'/(' + '|'.join(MESES_ABREVIADOS) + r')[a-zç]*\.?/', re.IGNORECASE)
+
+
 def _grade_para_dataframe(valores, cores):
     """Monta o DataFrame a partir de uma grade (lista de linhas) e da cor de cada célula.
 
@@ -144,11 +149,14 @@ def _grade_para_dataframe(valores, cores):
         cor = linha_cores[col_sla] if col_sla is not None and col_sla < len(linha_cores) else None
         sla.append(classificar_cor(cor))
 
-    # Datas que chegam como texto (HTML/XML) ficam no formato dia/mês/ano
+    # Datas que chegam como texto (HTML/XML) ficam no formato dia/mês/ano.
+    # O portal também usa o mês abreviado em português e ano com 2 dígitos (ex.: "13/out/26").
     for col in df.columns:
         textos = df[col].map(lambda v: isinstance(v, str))
         if normalizar_texto(col).startswith('data') and textos.any():
-            convertidas = pd.to_datetime(df.loc[textos, col], dayfirst=True, errors='coerce', format='mixed')
+            datas = df.loc[textos, col].str.strip().str.replace(
+                MESES_ABREVIADOS_RE, lambda m: f"/{MESES_ABREVIADOS[m.group(1).lower()]}/", regex=True)
+            convertidas = pd.to_datetime(datas, dayfirst=True, errors='coerce', format='mixed')
             df[col] = df[col].where(~textos, convertidas)
     return df, sla
 
