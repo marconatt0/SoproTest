@@ -13,7 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import openpyxl
 
-st.set_page_config(page_title="Painel de Controle - Estações", layout="wide")
+st.set_page_config(page_title="Gestão de Chamados SOPRO", page_icon="📊", layout="wide")
 
 # ---------------------------------------------------------------------------
 # Classificação dos status do portal
@@ -657,9 +657,11 @@ def responder_consulta(pergunta, df, data_ref):
 CSS_BOTAO_CONSULTA = """
 <style>
 .st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
-.st-key-botao_consulta button { border-radius: 999px; padding: 0.7rem 1.3rem; font-weight: 600;
+.st-key-botao_consulta button { border-radius: 999px; padding: 1.1rem 2rem; min-height: 4rem; font-weight: 700;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
-@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: 1rem; } }
+.st-key-botao_consulta button p { font-size: 1.25rem; }
+@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: 1rem; }
+  .st-key-botao_consulta button { padding: 0.9rem 1.5rem; min-height: 3.5rem; } }
 </style>
 """
 
@@ -715,6 +717,39 @@ export default function(component) {
 """
 
 _ajuste_teclado = st.components.v2.component("ajuste_teclado_consulta", js=JS_TECLADO)
+
+# Barra do topo: o Streamlit Cloud adiciona botões (compartilhar, estrela, editar, GitHub...).
+# Esconde todos, menos o do GitHub. O ícone de cada botão é uma imagem de fundo, então a escolha
+# é feita pelo endereço da imagem; se nenhum for reconhecido como GitHub, nada é escondido.
+JS_BARRA_TOPO = """
+export default function() {
+  if (window.__barraTopoSopro) return;
+  window.__barraTopoSopro = true;
+  const ehGithub = (botao) => {
+    const icone = botao.querySelector('[data-testid="stToolbarActionButtonIcon"]');
+    const fundo = icone ? getComputedStyle(icone).backgroundImage : '';
+    let texto = fundo + ' ' + (botao.textContent || '');
+    const base64 = fundo.match(/base64,([^"')]+)/);
+    if (base64) { try { texto += ' ' + atob(base64[1]); } catch (e) {} }
+    try { texto += ' ' + decodeURIComponent(fundo); } catch (e) {}
+    return /github/i.test(texto);
+  };
+  let agendado = false;
+  const aplicar = () => {
+    agendado = false;
+    const botoes = [...document.querySelectorAll('[data-testid="stToolbarActionButton"]')];
+    const github = botoes.filter(ehGithub);
+    if (!github.length) return;
+    botoes.forEach((b) => { b.style.display = github.includes(b) ? '' : 'none'; });
+  };
+  new MutationObserver(() => {
+    if (!agendado) { agendado = true; requestAnimationFrame(aplicar); }
+  }).observe(document.body, { childList: true, subtree: true });
+  aplicar();
+}
+"""
+
+_ajuste_barra_topo = st.components.v2.component("ajuste_barra_topo", js=JS_BARRA_TOPO)
 
 
 @st.fragment
@@ -784,8 +819,11 @@ def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
 # ---------------------------------------------------------------------------
 modo_consulta = st.session_state.get('modo_consulta', False)
 
+st.html("<style>.st-key-ajuste_barra_topo { display: none; }</style>")
+_ajuste_barra_topo(key="ajuste_barra_topo")
+
 with st.container(key="cabecalho_painel"):
-    st.title("📊 Afunilador de Chamados e Alertas")
+    st.title("📊 Gestão de Chamados SOPRO")
     st.write("Suba aqui o arquivo extraído do portal, em .xls ou .xlsx")
     arquivo_upload = st.file_uploader("Suba o arquivo Excel aqui", type=["xlsx", "xls"])
 
