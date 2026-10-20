@@ -11,9 +11,29 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import plotly.io as pio
 import openpyxl
 
 st.set_page_config(page_title="Gestão de Chamados SOPRO", page_icon="📊", layout="wide")
+
+# Tema de todos os gráficos: legenda embaixo (não rouba largura no celular), arrastar o dedo rola a
+# página em vez de dar zoom sem querer (tocar continua mostrando os valores) e margens enxutas.
+pio.templates['sopro'] = go.layout.Template(layout=dict(
+    dragmode=False, font=dict(size=13), hoverlabel=dict(font_size=14),
+    legend=dict(orientation='h', yref='container', yanchor='bottom', y=0, xanchor='left', x=0),
+    margin=dict(l=8, r=8, t=60, b=8), xaxis=dict(automargin=True), yaxis=dict(automargin=True)))
+pio.templates.default = 'plotly+sopro'
+
+
+def encurtar_nomes(fig, nomes, eixo='y'):
+    """Nomes longos (empresas) com até 20 letras no eixo; o nome completo continua no valor ao tocar/passar o mouse."""
+    curtos = [n if len(n) <= 20 else n[:19] + '…' for n in nomes]
+    (fig.update_yaxes if eixo == 'y' else fig.update_xaxes)(tickvals=list(nomes), ticktext=curtos)
+
+
+def altura_barras(n):
+    """Altura de um gráfico de barras deitadas com n categorias."""
+    return max(320, 28 * n + 140)
 
 # ---------------------------------------------------------------------------
 # Classificação dos status do portal
@@ -538,9 +558,10 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
         st.dataframe(ranking, width='stretch', hide_index=True)
     with colB:
         top = ranking.head(30)
-        fig = px.bar(top, x='Estação', y='Casos Registrados', title=f'Top 30 estações ({periodo})',
-                     color='Casos Registrados', color_continuous_scale=escala)
-        fig.update_layout(xaxis_tickangle=-45)
+        fig = px.bar(top, x='Casos Registrados', y='Estação', orientation='h', text='Casos Registrados',
+                     title=f'Top 30 estações ({periodo})', color='Casos Registrados', color_continuous_scale=escala)
+        fig.update_layout(yaxis_categoryorder='total ascending', coloraxis_showscale=False,
+                          height=altura_barras(len(top)))
         st.plotly_chart(fig, width='stretch')
 
     tend = df_sel[df_sel['Categoria'] == 'Aberto'].groupby('Mês Abertura').size().reset_index(name='Chamados')
@@ -864,7 +885,11 @@ st.html("<style>.st-key-ajuste_barra_topo { display: none; }"
         # No celular, título menor para o envio do arquivo aparecer sem rolar
         "@media (max-width: 640px) { h1 { font-size: 1.9rem !important; } }"
         # Botões com área de toque confortável (mínimo de 44 px)
-        "[data-testid=stBaseButton-secondary] { min-height: 44px; }</style>")
+        "[data-testid=stBaseButton-secondary] { min-height: 44px; }"
+        # Nomes longos (ex.: empresa mais eficiente) quebram linha em vez de ficarem cortados
+        "[data-testid=stMetricValue] p { white-space: normal !important; overflow-wrap: anywhere; }"
+        # No celular, a barra de ferramentas dos gráficos só atrapalha o toque
+        "@media (max-width: 640px) { .modebar-container { display: none !important; } }</style>")
 _ajuste_barra_topo(key="ajuste_barra_topo")
 
 with st.container(key="cabecalho_painel"):
@@ -1023,12 +1048,11 @@ if arquivo_upload:
         df_grafico['Porcentagem'] = (df_grafico['Quantidade'] / df_grafico['Total_Estacao'] * 100).round(1)
 
         fig = px.bar(
-            df_grafico, x='Estação', y='Quantidade', color='Categoria',
-            text='Porcentagem', barmode='stack', color_discrete_map=CATEGORIA_CORES,
-            category_orders={'Estação': list(top_estacoes)}
+            df_grafico, x='Quantidade', y='Estação', color='Categoria', orientation='h',
+            text='Porcentagem', barmode='stack', color_discrete_map=CATEGORIA_CORES
         )
         fig.update_traces(texttemplate='%{text}%', textposition='inside')
-        fig.update_layout(xaxis_tickangle=-45)
+        fig.update_layout(yaxis_categoryorder='total ascending', height=altura_barras(len(top_estacoes)))
         st.plotly_chart(fig, width='stretch')
 
         st.divider()
@@ -1068,7 +1092,8 @@ if arquivo_upload:
             fig_h.add_trace(go.Scatter(x=hist['Mês'], y=hist['Backlog Acumulado'], name='Backlog acumulado',
                                        mode='lines+markers', line=dict(color='#E74C3C', width=3)), secondary_y=True)
             fig_h.update_layout(barmode='group', title='Abertos x Resolvidos x Cancelados por mês',
-                                legend=dict(orientation='h', y=-0.2), hovermode='x unified')
+                                hovermode='x unified')
+            fig_h.update_xaxes(tickformat='%m/%Y')
             fig_h.update_yaxes(title_text='Chamados no mês', secondary_y=False)
             fig_h.update_yaxes(title_text='Backlog acumulado', secondary_y=True)
             st.plotly_chart(fig_h, width='stretch')
@@ -1080,14 +1105,16 @@ if arquivo_upload:
                                                mode='lines+markers', line=dict(color='#8E44AD', width=3)))
                 fig_tempo.add_trace(go.Scatter(x=hist['Mês'], y=hist['Média Dias Resolução'], name='Média',
                                                mode='lines', line=dict(color='#8E44AD', dash='dot')))
-                fig_tempo.update_layout(title='Tempo de resolução dos chamados fechados no mês (dias)',
-                                        hovermode='x unified', legend=dict(orientation='h', y=-0.2))
+                fig_tempo.update_layout(title='Dias para resolver, por mês',
+                                        hovermode='x unified')
+                fig_tempo.update_xaxes(tickformat='%m/%Y')
                 st.plotly_chart(fig_tempo, width='stretch')
             with c2:
                 fig_taxa = px.line(hist, x='Mês', y='% Resolvidos s/ Abertos', markers=True,
-                                   title='Capacidade de vazão: resolvidos ÷ abertos no mês (%)')
+                                   title='Resolvidos ÷ abertos no mês (%)')
                 fig_taxa.add_hline(y=100, line_dash='dash', line_color='gray',
                                    annotation_text='100% = fila estável')
+                fig_taxa.update_xaxes(tickformat='%m/%Y')
                 st.plotly_chart(fig_taxa, width='stretch')
 
             # Tempo de resolução por coorte de abertura e tipo
@@ -1096,18 +1123,18 @@ if arquivo_upload:
                 c3, c4 = st.columns(2)
                 with c3:
                     fig_box = px.box(res, x='Tipo', y='Dias p/ Resolver', color='Tipo', points=False,
-                                     title='Distribuição do tempo de resolução por tipo')
+                                     title='Dias para resolver, por tipo')
                     fig_box.update_layout(showlegend=False)
                     st.plotly_chart(fig_box, width='stretch')
                 with c4:
                     curva = res['Dias p/ Resolver'].sort_values().reset_index(drop=True)
                     acum = pd.DataFrame({'Dias': curva, '% Resolvidos': (curva.index + 1) / len(curva) * 100})
+                    # Percentuais no título: como rótulos nas linhas, 30/60/90 dias ficavam um em cima do outro
+                    marcos = ' · '.join(f'{d}d: {(curva <= d).mean() * 100:.0f}%' for d in [30, 60, 90])
                     fig_cdf = px.line(acum, x='Dias', y='% Resolvidos',
-                                      title='Curva acumulada: % dos chamados resolvidos até X dias')
+                                      title=f'% resolvidos até X dias<br><sup>{marcos}</sup>')
                     for d in [30, 60, 90]:
-                        p = (curva <= d).mean() * 100
-                        fig_cdf.add_vline(x=d, line_dash='dot', line_color='gray',
-                                          annotation_text=f'{d}d: {p:.0f}%')
+                        fig_cdf.add_vline(x=d, line_dash='dot', line_color='gray')
                     st.plotly_chart(fig_cdf, width='stretch')
 
             # Backlog atual por idade
@@ -1119,7 +1146,7 @@ if arquivo_upload:
                 aging = abertos.groupby(['Faixa', 'Tipo' if 'Tipo' in abertos else 'Status']).size().reset_index(name='Chamados')
                 fig_aging = px.bar(aging, x='Faixa', y='Chamados', color=aging.columns[1], barmode='stack',
                                    category_orders={'Faixa': FAIXAS_AGING},
-                                   title=f'{len(abertos)} chamados em aberto por tempo desde a abertura')
+                                   title=f'{len(abertos)} em aberto, por idade')
                 st.plotly_chart(fig_aging, width='stretch')
 
             with st.expander("📋 Tabela do histórico mensal"):
@@ -1167,38 +1194,43 @@ if arquivo_upload:
             fig_score = px.bar(emp, x='Índice de Eficiência', y='Empresa', orientation='h',
                                color='Índice de Eficiência', color_continuous_scale='RdYlGn', range_color=[0, 100],
                                text='Índice de Eficiência', title='Índice de eficiência por empresa')
-            fig_score.update_layout(yaxis={'categoryorder': 'total ascending'}, height=max(350, 35 * len(emp)))
+            fig_score.update_layout(yaxis={'categoryorder': 'total ascending'}, height=altura_barras(len(emp)),
+                                    coloraxis_showscale=False)
+            encurtar_nomes(fig_score, emp['Empresa'])
             st.plotly_chart(fig_score, width='stretch')
 
             c1, c2 = st.columns(2)
             with c1:
                 comp = emp.melt(id_vars='Empresa', value_vars=['% Resolução', '% SLA No Prazo'],
                                 var_name='Indicador', value_name='%')
-                fig_comp = px.bar(comp, x='Empresa', y='%', color='Indicador', barmode='group',
-                                  category_orders={'Empresa': ordem}, title='Taxa de resolução x SLA no prazo',
+                fig_comp = px.bar(comp, x='%', y='Empresa', color='Indicador', barmode='group', orientation='h',
+                                  category_orders={'Empresa': ordem[::-1]}, title='Taxa de resolução x SLA no prazo',
                                   color_discrete_map={'% Resolução': '#2ECC71', '% SLA No Prazo': '#3498DB'})
-                fig_comp.update_layout(xaxis_tickangle=-45, legend=dict(orientation='h', y=-0.45))
+                fig_comp.update_layout(height=altura_barras(2 * len(ordem)))
+                encurtar_nomes(fig_comp, ordem)
                 st.plotly_chart(fig_comp, width='stretch')
             with c2:
                 fig_disp = px.scatter(emp, x='Mediana Dias Resolução', y='% Resolução', size='Total',
                                       color='% SLA No Prazo', color_continuous_scale='RdYlGn', hover_name='Empresa',
-                                      title='Volume x rapidez x resolução (bolha = volume)', size_max=60)
+                                      title='Rapidez × resolução (bolha = volume)', size_max=60)
                 st.plotly_chart(fig_disp, width='stretch')
 
             c3, c4 = st.columns(2)
             with c3:
                 mix = df_emp_base[df_emp_base['Empresa'].isin(ordem)].groupby(['Empresa', 'Categoria']).size().reset_index(name='Chamados')
-                fig_mix = px.bar(mix, x='Empresa', y='Chamados', color='Categoria', barmode='stack',
-                                 color_discrete_map=CATEGORIA_CORES, category_orders={'Empresa': ordem},
-                                 title='Volume e situação dos chamados por empresa')
-                fig_mix.update_layout(xaxis_tickangle=-45)
+                fig_mix = px.bar(mix, x='Chamados', y='Empresa', color='Categoria', barmode='stack', orientation='h',
+                                 color_discrete_map=CATEGORIA_CORES, category_orders={'Empresa': ordem[::-1]},
+                                 title='Situação dos chamados por empresa')
+                fig_mix.update_layout(height=altura_barras(len(ordem)))
+                encurtar_nomes(fig_mix, ordem)
                 st.plotly_chart(fig_mix, width='stretch')
             with c4:
                 res_emp = df_emp_base[(df_emp_base['Empresa'].isin(ordem)) & df_emp_base['Dias p/ Resolver'].notna()]
-                fig_box_emp = px.box(res_emp, x='Empresa', y='Dias p/ Resolver', points=False,
-                                     category_orders={'Empresa': ordem},
-                                     title='Distribuição dos dias para resolver por empresa')
-                fig_box_emp.update_layout(xaxis_tickangle=-45)
+                fig_box_emp = px.box(res_emp, x='Dias p/ Resolver', y='Empresa', points=False, orientation='h',
+                                     category_orders={'Empresa': ordem[::-1]},
+                                     title='Dias para resolver, por empresa')
+                fig_box_emp.update_layout(height=altura_barras(len(ordem)))
+                encurtar_nomes(fig_box_emp, ordem)
                 st.plotly_chart(fig_box_emp, width='stretch')
 
             st.subheader("📉 Evolução mensal por empresa")
@@ -1213,20 +1245,21 @@ if arquivo_upload:
                     serie = res_h.groupby(['Mês Fechamento', 'Empresa']).size().reset_index(name='Resolvidos')
                     fig_r = px.line(serie, x='Mês Fechamento', y='Resolvidos', color='Empresa', markers=True,
                                     title='Chamados resolvidos por mês')
-                    fig_r.update_layout(legend=dict(orientation='h', y=-0.3))
+                    fig_r.update_xaxes(tickformat='%m/%Y')
                     st.plotly_chart(fig_r, width='stretch')
                 with c6:
                     serie_t = res_h.groupby(['Mês Fechamento', 'Empresa'])['Dias p/ Resolver'].median().reset_index()
                     fig_t = px.line(serie_t, x='Mês Fechamento', y='Dias p/ Resolver', color='Empresa', markers=True,
-                                    title='Mediana de dias para resolver (por mês de fechamento)')
-                    fig_t.update_layout(legend=dict(orientation='h', y=-0.3))
+                                    title='Mediana de dias para resolver')
+                    fig_t.update_xaxes(tickformat='%m/%Y')
                     st.plotly_chart(fig_t, width='stretch')
 
                 if 'Tipo' in base_h.columns:
                     calor = resumo_por_grupo(base_h, ['Empresa', 'Tipo'], data_ref)
                     calor = calor.pivot(index='Empresa', columns='Tipo', values='% Resolução')
                     fig_heat = px.imshow(calor, text_auto='.0f', color_continuous_scale='RdYlGn', zmin=0, zmax=100,
-                                         aspect='auto', title='% de resolução por empresa e tipo de chamado')
+                                         aspect='auto', title='% de resolução: empresa × tipo')
+                    encurtar_nomes(fig_heat, calor.index)
                     st.plotly_chart(fig_heat, width='stretch')
 
             st.subheader("📋 Tabela de indicadores por empresa")
