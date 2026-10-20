@@ -558,7 +558,7 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
 # Assistente de consulta por estação
 # ---------------------------------------------------------------------------
 COLUNAS_CONSULTA = ['ID Sopro', 'Data', 'Tipo', 'Descrição', 'Empresa', 'Status', 'Dias em aberto',
-                    'Data Fechamento']
+                    'Data Fechamento', 'Observações']
 MAX_ESTACOES_RESPOSTA = 10
 
 MENSAGEM_AJUDA = (
@@ -621,7 +621,7 @@ def responder_consulta(pergunta, df, data_ref):
             return blocos
         texto = "Não reconheci nenhuma estação na sua mensagem."
         if sugestoes:
-            texto += " Você quis dizer: " + ", ".join(f"**{s}**" for s in sugestoes) + "?"
+            return [{'texto': texto + " Você quis dizer:", 'estacoes': sugestoes}]
         return [{'texto': texto + "\n\n" + MENSAGEM_AJUDA}]
 
     if len(estacoes) > MAX_ESTACOES_RESPOSTA:
@@ -633,8 +633,8 @@ def responder_consulta(pergunta, df, data_ref):
         }).reset_index().sort_values('Chamados em aberto', ascending=False)
         resumo['Mais antigo'] = resumo['Mais antigo'].dt.strftime('%d/%m/%Y')
         blocos.append({'texto': f"Encontrei **{len(estacoes)}** estações com esse início de código; "
-                                f"**{len(resumo)}** delas têm chamado em aberto. Digite o código completo "
-                                f"para ver os detalhes de uma estação.",
+                                f"**{len(resumo)}** delas têm chamado em aberto. Toque numa estação "
+                                f"para ver os detalhes.",
                        'tabela': resumo if not resumo.empty else None})
         return blocos
 
@@ -677,7 +677,9 @@ CSS_TELA_CONSULTA = """
 .st-key-topo_consulta { position: fixed; top: 0; left: 0; right: 0; width: auto !important; z-index: 990;
   padding: 0.5rem 1rem; background: var(--st-background-color, #ffffff);
   border-bottom: 1px solid rgba(128, 128, 128, 0.2); }
-.st-key-voltar_consulta button { border: none; background: transparent; padding: 0.1rem 0.6rem; min-height: 0; }
+.st-key-voltar_consulta button { border: none; background: transparent; padding: 0.1rem 0.6rem;
+  min-height: 44px; min-width: 44px; }
+[data-testid="stChatInputSubmitButton"] { min-height: 44px; min-width: 44px; }
 .st-key-voltar_consulta button p { font-size: 2rem; line-height: 1; }
 .st-key-topo_consulta h3 { margin: 0; padding: 0; }
 [data-testid="stChatMessage"] { scroll-margin-top: 4.5rem; }
@@ -765,6 +767,39 @@ def botao_consulta():
         st.rerun()
 
 
+CORES_CATEGORIA = {'Aberto': 'orange', 'Resolvido': 'green', 'Cancelado': 'gray'}
+
+
+def botao_pesquisar(estacao, key):
+    st.button(f"🔎 {estacao}", key=key, on_click=st.session_state.__setitem__,
+              args=('consulta_pendente', estacao))
+
+
+def mostrar_cartoes(tabela, key):
+    """Um cartão por linha: no celular cabe sem arrastar para o lado, ao contrário de uma tabela larga."""
+    for n, linha in tabela.iterrows():
+        with st.container(border=True):
+            if 'ID Sopro' in linha:
+                st.markdown(f"**{linha['ID Sopro']}** · {linha.get('Tipo', '')}")
+                st.badge(linha['Status'], color=CORES_CATEGORIA[categorizar_status(linha['Status'])])
+                st.markdown(str(linha.get('Descrição', '')))
+                detalhes = [f"Aberto em {linha['Data']}"]
+                if pd.notna(linha.get('Dias em aberto')):
+                    detalhes.append(f"**{linha['Dias em aberto']} dias em aberto**")
+                if pd.notna(linha.get('Data Fechamento')):
+                    detalhes.append(f"fechado em {linha['Data Fechamento']}")
+                detalhes.append(str(linha.get('Empresa', '')))
+                st.caption(' · '.join(detalhes))
+                obs = linha.get('Observações')
+                if pd.notna(obs) and str(obs).strip(' -'):
+                    with st.expander("Ver observações"):
+                        st.write(obs)
+            else:  # resumo de um grupo de estações (busca pelo início do código)
+                botao_pesquisar(linha['Estação'], f'grp_{key}_{n}')
+                st.caption(f"**{linha['Chamados em aberto']} em aberto** · mais antigo: {linha['Mais antigo']}"
+                           f" · {linha['Tipos']}")
+
+
 def tela_consulta(df, data_ref):
     """Assistente em tela cheia, com o campo de texto preso no rodapé (fica acima do teclado no celular)."""
     st.html(CSS_TELA_CONSULTA)
@@ -778,18 +813,21 @@ def tela_consulta(df, data_ref):
     if 'chat_consulta' not in st.session_state:
         st.session_state.chat_consulta = [{'papel': 'assistant', 'blocos': [{'texto': "Olá! " + MENSAGEM_AJUDA}]}]
 
-    pergunta = st.chat_input("Estação ou ID do chamado")
+    # Tocar numa estação sugerida (ou no resumo de um grupo) pesquisa por ela, sem digitar
+    pergunta = st.chat_input("Estação ou ID do chamado") or st.session_state.pop('consulta_pendente', None)
     if pergunta:
         st.session_state.chat_consulta.append({'papel': 'user', 'blocos': [{'texto': pergunta}]})
         st.session_state.chat_consulta.append({'papel': 'assistant',
                                                'blocos': responder_consulta(pergunta, df, data_ref)})
 
-    for msg in st.session_state.chat_consulta:
+    for i, msg in enumerate(st.session_state.chat_consulta):
         with st.chat_message(msg['papel']):
-            for bloco in msg['blocos']:
+            for j, bloco in enumerate(msg['blocos']):
                 st.markdown(bloco['texto'])
                 if bloco.get('tabela') is not None:
-                    st.dataframe(bloco['tabela'], width='stretch', hide_index=True)
+                    mostrar_cartoes(bloco['tabela'], f'{i}_{j}')
+                for est in bloco.get('estacoes', []):
+                    botao_pesquisar(est, f'sug_{i}_{j}_{est}')
 
     if len(st.session_state.chat_consulta) > 1 and st.button("🗑️ Limpar conversa"):
         del st.session_state.chat_consulta
@@ -822,7 +860,11 @@ def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
 # ---------------------------------------------------------------------------
 modo_consulta = st.session_state.get('modo_consulta', False)
 
-st.html("<style>.st-key-ajuste_barra_topo { display: none; }</style>")
+st.html("<style>.st-key-ajuste_barra_topo { display: none; }"
+        # No celular, título menor para o envio do arquivo aparecer sem rolar
+        "@media (max-width: 640px) { h1 { font-size: 1.9rem !important; } }"
+        # Botões com área de toque confortável (mínimo de 44 px)
+        "[data-testid=stBaseButton-secondary] { min-height: 44px; }</style>")
 _ajuste_barra_topo(key="ajuste_barra_topo")
 
 with st.container(key="cabecalho_painel"):
