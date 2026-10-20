@@ -557,7 +557,8 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
 # ---------------------------------------------------------------------------
 # Assistente de consulta por estação
 # ---------------------------------------------------------------------------
-COLUNAS_CONSULTA = ['ID Sopro', 'Data', 'Tipo', 'Descrição', 'Empresa', 'Status', 'Dias em aberto']
+COLUNAS_CONSULTA = ['ID Sopro', 'Data', 'Tipo', 'Descrição', 'Empresa', 'Status', 'Dias em aberto',
+                    'Data Fechamento']
 MAX_ESTACOES_RESPOSTA = 10
 
 MENSAGEM_AJUDA = (
@@ -588,9 +589,12 @@ def identificar_estacoes(pergunta, estacoes):
 
 def tabela_chamados(chamados, data_ref):
     t = chamados.sort_values('Data', ascending=False).copy()
-    t['Dias em aberto'] = (data_ref - t['Data']).dt.days
-    t['Data'] = t['Data'].dt.strftime('%d/%m/%Y')
-    return t[[c for c in COLUNAS_CONSULTA if c in t.columns]].reset_index(drop=True)
+    t['Dias em aberto'] = (data_ref - t['Data']).dt.days.where(t['Categoria'] == 'Aberto').astype('Int64')
+    for col in ['Data', 'Data Fechamento']:
+        if col in t.columns:
+            t[col] = t[col].dt.strftime('%d/%m/%Y')
+    # Colunas vazias (ex.: fechamento de chamados abertos) não aparecem
+    return t[[c for c in COLUNAS_CONSULTA if c in t.columns]].dropna(axis=1, how='all').reset_index(drop=True)
 
 
 def responder_consulta(pergunta, df, data_ref):
@@ -644,12 +648,11 @@ def responder_consulta(pergunta, df, data_ref):
                            'tabela': tabela_chamados(abertos, data_ref)})
         else:
             texto = f"🟢 A estação **{est}** não tem chamado em aberto."
-            if not chamados.empty:
-                ultimo = chamados.sort_values('Data').iloc[-1]
-                texto += (f" Último chamado: **{ultimo['ID Sopro']}** ({ultimo.get('Tipo', '')} — "
-                          f"{ultimo.get('Descrição', '')}), aberto em {ultimo['Data'].strftime('%d/%m/%Y')}, "
-                          f"status {ultimo['Status']}.")
-            blocos.append({'texto': texto})
+            if chamados.empty:
+                blocos.append({'texto': texto})
+            else:
+                blocos.append({'texto': texto + f" Chamados registrados ({len(chamados)}):",
+                               'tabela': tabela_chamados(chamados, data_ref)})
     return blocos
 
 
