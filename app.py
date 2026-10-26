@@ -39,8 +39,8 @@ def altura_barras(n):
 # ---------------------------------------------------------------------------
 # Classificação dos status do portal
 # ---------------------------------------------------------------------------
-STATUS_RESOLVIDO = ["concluído", "concluido", "fechado"]
-STATUS_CANCELADO = ["cancelado"]
+# Status do portal (comparados inteiros, sem acento/maiúscula) e a situação de cada um
+STATUS_CATEGORIA = {"em andamento": "Aberto", "concluido": "Resolvido", "cancelado pela sharing": "Cancelado"}
 # Status que não entram em nenhum cálculo nem relatório
 STATUS_EXCLUIDOS = ["aguardando número do chamado", "cancelado pela claro", "fechado pelo mso", "pendente claro"]
 
@@ -64,12 +64,12 @@ def status_excluido(status):
 
 
 def categorizar_status(status):
-    s = str(status).lower()
-    if any(k in s for k in STATUS_RESOLVIDO):
-        return "Resolvido"
-    if any(k in s for k in STATUS_CANCELADO):
-        return "Cancelado"
-    return "Aberto"
+    """Situação pela lista fechada; status desconhecido conta como Aberto (e é avisado na tela)."""
+    return STATUS_CATEGORIA.get(normalizar_texto(status), "Aberto")
+
+
+def status_desconhecidos(df):
+    return sorted({s for s in df['Status'].unique() if normalizar_texto(s) not in STATUS_CATEGORIA})
 
 
 CORES_NOMEADAS = {'red': 'FF0000', 'green': '008000', 'lime': '00FF00', 'darkgreen': '006400',
@@ -1008,6 +1008,10 @@ if arquivo_upload:
         st.stop()
     if duplicadas:
         st.warning(f"{duplicadas} linha(s) repetida(s) na planilha foram descartadas (eram idênticas a outra linha).")
+    desconhecidos = status_desconhecidos(df)
+    if desconhecidos:
+        st.warning(f"Status não reconhecido(s): {', '.join(desconhecidos)}. Foram contados como **em aberto**; "
+                   "avise para incluí-los na lista de status.")
     # A conversa do chat vale para o arquivo carregado: arquivo diferente, conversa nova
     impressao = hashlib.md5(arquivo_upload.getvalue()).hexdigest()
     if st.session_state.get('arquivo_do_chat') != impressao:
