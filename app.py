@@ -530,6 +530,17 @@ def filtrar_status(df, status_selecionado):
     return df
 
 
+def fechamento_antes_da_abertura(df):
+    """Chamados com Data Fechamento anterior à Data de abertura (erro de digitação no portal)."""
+    if 'Data Fechamento' not in df.columns:
+        return pd.DataFrame()
+    ruins = df[df['Data Fechamento'] < df['Data']].sort_values('Data Fechamento')
+    t = ruins[[c for c in ['ID Sopro', 'Estação', 'Status', 'Empresa', 'Data', 'Data Fechamento'] if c in df.columns]].copy()
+    for col in ['Data', 'Data Fechamento']:
+        t[col] = t[col].map(formatar_data)
+    return t.rename(columns={'Data': 'Aberto em', 'Data Fechamento': 'Fechado em'})
+
+
 def comparar_trimestres(hist, data_ref):
     """Destaques dos últimos 3 meses completos contra os 3 anteriores."""
     if hist.empty:
@@ -1251,6 +1262,12 @@ if arquivo_upload:
                 hist_tab = hist.copy()
                 hist_tab['Mês'] = hist_tab['Mês'].dt.strftime('%m/%Y')
                 st.dataframe(hist_tab, width='stretch', hide_index=True)
+
+        incons = fechamento_antes_da_abertura(df_final)
+        if not incons.empty:
+            with st.expander(f"⚠️ Inconsistências da planilha: {len(incons)} chamado(s) fechado(s) antes da abertura"):
+                st.caption("Ficam fora do tempo de resolução, mas contam como fechados no mês da data de fechamento.")
+                st.dataframe(incons, width='stretch', hide_index=True)
 
     # ------------------------------------------------------- Eficiência por Empresa
     with aba3:
