@@ -403,6 +403,12 @@ def preparar_filtro(key, opcoes, padrao):
     st.session_state[key] = atual
 
 
+def data_da_extracao(nome_arquivo):
+    """Data/hora da extração no nome do arquivo do portal (Chamados_AAAAMMDDhhmmss), ou None."""
+    m = re.search(r'Chamados_(\d{14})', nome_arquivo or '')
+    return pd.to_datetime(m.group(1), format='%Y%m%d%H%M%S', errors='coerce') if m else None
+
+
 def formatar_data(valor, vazio='sem data'):
     """dd/mm/aaaa; data ausente (NaT/None) vira texto em vez de derrubar o app."""
     return valor.strftime('%d/%m/%Y') if pd.notna(valor) else vazio
@@ -943,7 +949,9 @@ if arquivo_upload:
     if st.session_state.get('arquivo_do_chat') != impressao:
         st.session_state.pop('chat_consulta', None)
         st.session_state['arquivo_do_chat'] = impressao
-    data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
+    # "Dias em aberto" e idade do backlog contam até a extração do arquivo; sem a data no nome, até hoje
+    extracao = data_da_extracao(arquivo_upload.name)
+    data_ref = (extracao if pd.notna(extracao) else pd.Timestamp.today()).normalize()
 
     if not modo_consulta:
         botao_consulta()
@@ -1037,8 +1045,10 @@ if arquivo_upload:
         st.warning("Nenhum chamado encontrado com os filtros selecionados.")
         st.stop()
 
-    st.caption(f"Data de referência da planilha (último chamado aberto): **{data_ref.strftime('%d/%m/%Y')}** · "
-               f"{len(df_final)} chamados no filtro atual")
+    referencia = (f"Dados extraídos em **{extracao.strftime('%d/%m/%Y %H:%M')}**" if pd.notna(extracao) else
+                  f"Dias em aberto contados até hoje, **{data_ref.strftime('%d/%m/%Y')}** "
+                  f"(o nome do arquivo não traz a data da extração)")
+    st.caption(f"{referencia} · {len(df_final)} chamados no filtro atual")
 
     aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "📊 Visão Geral", "📈 Histórico de Resolução", "🏢 Eficiência por Empresa",
