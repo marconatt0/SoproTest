@@ -359,12 +359,18 @@ def carregar_dados(conteudo):
     df = df.rename(columns={'Data.1': 'Data Acionamento'})
 
     df = df.dropna(subset=['Estação'])
-    # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só, qualquer uma.
+    df['Status'] = df['Status'].astype(str).str.strip()
+    # Status ignorados saem antes das duplicadas, para o aviso contar só o que muda os relatórios
+    df = df[~df['Status'].apply(status_excluido)]
+    # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só.
+    # Se as linhas divergem no SLA, vale a bolinha vermelha (FORA DO PRAZO > NO PRAZO > SEM SLA).
     # O mesmo ID com empresa diferente continua na contagem, uma vez por empresa.
     antes = len(df)
     if 'ID Sopro' in df.columns:
         sem_id = df['ID Sopro'].isna() | (df['ID Sopro'].astype(str).str.strip() == '')
-        df = pd.concat([df[~sem_id].drop_duplicates(subset=['ID Sopro', 'Empresa']),
+        com_id = df[~sem_id].sort_values('SLA', kind='stable',
+                                         key=lambda s: s.map({'FORA DO PRAZO': 0, 'NO PRAZO': 1}).fillna(2))
+        df = pd.concat([com_id.drop_duplicates(subset=['ID Sopro', 'Empresa']),
                         df[sem_id].drop_duplicates()]).sort_index()
     else:
         df = df.drop_duplicates()
@@ -373,8 +379,6 @@ def carregar_dados(conteudo):
     for col in ['ID Atividade', 'ID Fornecedor', 'Chamado']:
         if col in df.columns:
             df[col] = df[col].apply(lambda v: '' if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v))
-    df['Status'] = df['Status'].astype(str).str.strip()
-    df = df[~df['Status'].apply(status_excluido)]
     df['Empresa'] = df['Empresa'].fillna('NÃO INFORMADA').astype(str).str.strip()
     for col in ['UF', 'Regional']:
         if col in df.columns:
@@ -511,6 +515,10 @@ def historico_mensal(df, inicio=None, fim=None):
     if 'Data Acionamento' in fechados.columns:
         saida = saida.fillna(fechados['Data Acionamento'].dt.to_period('M').dt.to_timestamp())
     saida = saida.fillna(fechados['Mês Abertura'])
+    # Fechados antes de abrir (#013) são anteriores ao SOPRO: entram em Abertos/Resolvidos, mas não no backlog
+    pre_sopro = fechados['Data Fechamento'] < fechados['Data']
+    fora_backlog = pd.concat([saida[pre_sopro].value_counts(),
+                              -fechados.loc[pre_sopro, 'Mês Abertura'].value_counts()], axis=1).sum(axis=1)
     resolvidos = saida[fechados['Categoria'] == 'Resolvido'].value_counts().rename('Resolvidos')
     cancelados = saida[fechados['Categoria'] == 'Cancelado'].value_counts().rename('Cancelados')
     mediana = res.groupby('Mês Fechamento')['Dias p/ Resolver'].median().rename('Mediana Dias Resolução')
@@ -526,7 +534,8 @@ def historico_mensal(df, inicio=None, fim=None):
     h.index.name = 'Mês'
     for c in ['Abertos', 'Resolvidos', 'Cancelados']:
         h[c] = h[c].fillna(0).astype(int)
-    h['Saldo do Mês'] = h['Abertos'] - h['Resolvidos'] - h['Cancelados']
+    h['Saldo do Mês'] = (h['Abertos'] - h['Resolvidos'] - h['Cancelados']
+                         + fora_backlog.reindex(h.index, fill_value=0).astype(int))
     h['Backlog Acumulado'] = h['Saldo do Mês'].cumsum()
     h['% Resolvidos s/ Abertos'] = (h['Resolvidos'] / h['Abertos'].where(h['Abertos'] > 0) * 100).round(1)
     h['Mediana Dias Resolução'] = h['Mediana Dias Resolução'].round(1)
@@ -999,7 +1008,11 @@ st.html("<style>.st-key-ajuste_barra_topo { display: none; }"
         # Nomes longos (ex.: empresa mais eficiente) quebram linha em vez de ficarem cortados
         "[data-testid=stMetricValue] p { white-space: normal !important; overflow-wrap: anywhere; }"
         # No celular, a barra de ferramentas dos gráficos só atrapalha o toque
-        "@media (max-width: 640px) { .modebar-container { display: none !important; } }</style>")
+        "@media (max-width: 640px) { .modebar-container { display: none !important; } }"
+        # Textos do envio de arquivo em português (o Streamlit não traduz esse componente)
+        "[data-testid=stFileUploaderDropzone] button p, [data-testid=stFileUploaderDropzoneInstructions] span { font-size: 0; }"
+        "[data-testid=stFileUploaderDropzone] button p::after { content: 'Escolher arquivo'; font-size: 1rem; }"
+        "[data-testid=stFileUploaderDropzoneInstructions] span::after { content: 'Até 200 MB · .xls ou .xlsx'; font-size: 0.875rem; }</style>")
 _ajuste_barra_topo(key="ajuste_barra_topo")
 
 with st.container(key="cabecalho_painel"):
@@ -1526,7 +1539,7 @@ if arquivo_upload:
         ("status", status_selecionado != "TODOS"), ("SLA", sla_selecionado != "TODOS"),
         ("tipo", 'Tipo' in df.columns and set(tipos_selecionados) != set(tipos_disponiveis)),
         ("estações", bool(estacoes_selecionadas))] if ativo]
-    aviso_ignorados = (f"Os filtros de {', '.join(ignorados)} da barra lateral não se aplicam a esta aba: ela mostra "
+    aviso_ignorados = (f"Os filtros de {' e '.join([', '.join(ignorados[:-1]), ignorados[-1]] if len(ignorados) > 1 else ignorados)} da barra lateral não se aplicam a esta aba: ela mostra "
                        "todos os casos do período, da regional e da empresa escolhidos.") if ignorados else None
 
     with aba5:
