@@ -1514,10 +1514,19 @@ if arquivo_upload:
 
     # ------------------------------------------------------------- Ninhos / Zeladoria
     colunas_det = ['ID Sopro', 'Data', 'Estação', 'Tipo', 'Descrição', 'Empresa', 'Status', 'Data Fechamento']
+    # Estas abas usam período, regional e empresa; os demais filtros não se aplicam (avisa quando estão ativos)
+    ignorados = [nome for nome, ativo in [
+        ("status", status_selecionado != "TODOS"), ("SLA", sla_selecionado != "TODOS"),
+        ("tipo", 'Tipo' in df.columns and set(tipos_selecionados) != set(tipos_disponiveis)),
+        ("estações", bool(estacoes_selecionadas))] if ativo]
+    aviso_ignorados = (f"Os filtros de {', '.join(ignorados)} da barra lateral não se aplicam a esta aba: ela mostra "
+                       "todos os casos do período, da regional e da empresa escolhidos.") if ignorados else None
 
     with aba5:
         st.subheader("🚨 Sites com Maior Incidência de Ninhos")
         st.write("Sites que mais geram chamado de ninhos")
+        if aviso_ignorados:
+            st.info(aviso_ignorados)
         ranking_ocorrencias(
             df_f1, lambda d: d['Descrição'].astype(str).str.contains('Insetos Ou Ninhos', case=False, na=False),
             "Ninhos", 'Reds', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
@@ -1527,6 +1536,8 @@ if arquivo_upload:
     with aba6:
         st.subheader("🌿 Sites com Maior Incidência de Problemas de Zeladoria")
         st.write("Monitore as estações que mais demandaram serviços de zeladoria no histórico recente.")
+        if aviso_ignorados:
+            st.info(aviso_ignorados)
         ranking_ocorrencias(
             df_f1, lambda d: d['Tipo'].astype(str).str.contains('Zeladoria', case=False, na=False),
             "Zeladoria", 'Greens', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
