@@ -401,6 +401,11 @@ def carregar_dados(conteudo):
     return df
 
 
+def formatar_data(valor, vazio='sem data'):
+    """dd/mm/aaaa; data ausente (NaT/None) vira texto em vez de derrubar o app."""
+    return valor.strftime('%d/%m/%Y') if pd.notna(valor) else vazio
+
+
 def faixa_aging(dias):
     if pd.isna(dias):
         return "Sem data"
@@ -544,7 +549,7 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
            'Resolvidos': ('Categoria', lambda x: (x == 'Resolvido').sum()),
            'Último Registro': ('Data', 'max')}
     ).reset_index().sort_values('Casos Registrados', ascending=False)
-    ranking['Último Registro'] = ranking['Último Registro'].dt.strftime('%d/%m/%Y')
+    ranking['Último Registro'] = ranking['Último Registro'].map(formatar_data)
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Chamados no período", len(df_sel))
@@ -613,7 +618,7 @@ def tabela_chamados(chamados, data_ref):
     t['Dias em aberto'] = (data_ref - t['Data']).dt.days.where(t['Categoria'] == 'Aberto').astype('Int64')
     for col in ['Data', 'Data Fechamento']:
         if col in t.columns:
-            t[col] = t[col].dt.strftime('%d/%m/%Y')
+            t[col] = t[col].map(lambda v: formatar_data(v, None if col == 'Data Fechamento' else 'sem data'))
     # Colunas vazias (ex.: fechamento de chamados abertos) não aparecem
     return t[[c for c in COLUNAS_CONSULTA if c in t.columns]].dropna(axis=1, how='all').reset_index(drop=True)
 
@@ -629,9 +634,9 @@ def responder_consulta(pergunta, df, data_ref):
             blocos.append({'texto': f"Não encontrei o chamado **{', '.join(ids)}** nesta planilha."})
         for _, c in achados.iterrows():
             fechamento = c.get('Data Fechamento')
-            fech_txt = f" · fechado em {fechamento.strftime('%d/%m/%Y')}" if pd.notna(fechamento) else ""
+            fech_txt = f" · fechado em {formatar_data(fechamento)}" if pd.notna(fechamento) else ""
             blocos.append({'texto': f"**{c['ID Sopro']}** · estação **{c['Estação']}** · {c.get('Tipo', '')} — "
-                                    f"{c.get('Descrição', '')} · aberto em {c['Data'].strftime('%d/%m/%Y')} · "
+                                    f"{c.get('Descrição', '')} · aberto em {formatar_data(c['Data'])} · "
                                     f"status **{c['Status']}** · {c.get('Empresa', '')}{fech_txt}"})
         if not re.sub(r'SPR\d+', '', pergunta, flags=re.IGNORECASE).strip():
             return blocos
