@@ -359,6 +359,9 @@ def carregar_dados(conteudo):
     df = df.rename(columns={'Data.1': 'Data Acionamento'})
 
     df = df.dropna(subset=['Estação'])
+    df['Status'] = df['Status'].astype(str).str.strip()
+    # Status ignorados saem antes das duplicadas, para o aviso contar só o que muda os relatórios
+    df = df[~df['Status'].apply(status_excluido)]
     # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só, qualquer uma.
     # O mesmo ID com empresa diferente continua na contagem, uma vez por empresa.
     antes = len(df)
@@ -373,8 +376,6 @@ def carregar_dados(conteudo):
     for col in ['ID Atividade', 'ID Fornecedor', 'Chamado']:
         if col in df.columns:
             df[col] = df[col].apply(lambda v: '' if pd.isna(v) else str(int(v)) if isinstance(v, float) and v.is_integer() else str(v))
-    df['Status'] = df['Status'].astype(str).str.strip()
-    df = df[~df['Status'].apply(status_excluido)]
     df['Empresa'] = df['Empresa'].fillna('NÃO INFORMADA').astype(str).str.strip()
     for col in ['UF', 'Regional']:
         if col in df.columns:
