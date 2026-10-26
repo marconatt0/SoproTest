@@ -362,12 +362,15 @@ def carregar_dados(conteudo):
     df['Status'] = df['Status'].astype(str).str.strip()
     # Status ignorados saem antes das duplicadas, para o aviso contar só o que muda os relatórios
     df = df[~df['Status'].apply(status_excluido)]
-    # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só, qualquer uma.
+    # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só.
+    # Se as linhas divergem no SLA, vale a bolinha vermelha (FORA DO PRAZO > NO PRAZO > SEM SLA).
     # O mesmo ID com empresa diferente continua na contagem, uma vez por empresa.
     antes = len(df)
     if 'ID Sopro' in df.columns:
         sem_id = df['ID Sopro'].isna() | (df['ID Sopro'].astype(str).str.strip() == '')
-        df = pd.concat([df[~sem_id].drop_duplicates(subset=['ID Sopro', 'Empresa']),
+        com_id = df[~sem_id].sort_values('SLA', kind='stable',
+                                         key=lambda s: s.map({'FORA DO PRAZO': 0, 'NO PRAZO': 1}).fillna(2))
+        df = pd.concat([com_id.drop_duplicates(subset=['ID Sopro', 'Empresa']),
                         df[sem_id].drop_duplicates()]).sort_index()
     else:
         df = df.drop_duplicates()
