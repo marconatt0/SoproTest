@@ -687,13 +687,18 @@ def responder_consulta(pergunta, df, data_ref):
             'Mais antigo': ('Data', 'min'),
             'Tipos': ('Tipo', lambda x: ', '.join(sorted(x.unique()))),
         }).reset_index().sort_values('Chamados em aberto', ascending=False)
-        resumo['Mais antigo'] = resumo['Mais antigo'].dt.strftime('%d/%m/%Y')
+        resumo['Mais antigo'] = resumo['Mais antigo'].map(formatar_data)
+        com_aberto = len(resumo)
         # Lista digitada código a código ou busca pelo início do código (ex.: RSBGE)
         digitadas = all(re.search(rf'\b{re.escape(str(e))}\b', pergunta, re.IGNORECASE) for e in estacoes)
+        if digitadas:  # cada código digitado aparece, inclusive os sem chamado em aberto (🟢)
+            sem_aberto = [e for e in estacoes if e not in set(resumo['Estação'])]
+            resumo = pd.concat([resumo, pd.DataFrame({'Estação': sem_aberto, 'Chamados em aberto': 0,
+                                                      'Mais antigo': '', 'Tipos': ''})], ignore_index=True)
         origem = "Você pesquisou" if digitadas else "Encontrei"
         complemento = "" if digitadas else " com esse início de código"
         blocos.append({'texto': f"{origem} **{len(estacoes)}** estações{complemento}; "
-                                f"**{len(resumo)}** delas têm chamado em aberto. Toque numa estação "
+                                f"**{com_aberto}** delas têm chamado em aberto. Toque numa estação "
                                 f"para ver os detalhes.",
                        'tabela': resumo if not resumo.empty else None})
         return blocos + avisos
@@ -856,8 +861,11 @@ def mostrar_cartoes(tabela, key):
                         st.write(obs)
             else:  # resumo de um grupo de estações (busca pelo início do código)
                 botao_pesquisar(linha['Estação'], f'grp_{key}_{n}')
-                st.caption(f"**{linha['Chamados em aberto']} em aberto** · mais antigo: {linha['Mais antigo']}"
-                           f" · {linha['Tipos']}")
+                if linha['Chamados em aberto']:
+                    st.caption(f"🔴 **{linha['Chamados em aberto']} em aberto** · mais antigo: "
+                               f"{linha['Mais antigo']} · {linha['Tipos']}")
+                else:
+                    st.caption("🟢 sem chamado em aberto")
 
 
 def tela_consulta(df, data_ref):
