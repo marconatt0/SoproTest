@@ -354,6 +354,10 @@ def carregar_dados(conteudo):
     df = df.rename(columns={'Data.1': 'Data Acionamento'})
 
     df = df.dropna(subset=['Estação'])
+    # Linhas 100% iguais (exportação repetida) contariam o chamado em dobro
+    antes = len(df)
+    df = df.drop_duplicates()
+    duplicadas = antes - len(df)
     # Colunas com números e textos misturados (ex.: "1213/ 1214") viram texto para exibição
     for col in ['ID Atividade', 'ID Fornecedor', 'Chamado']:
         if col in df.columns:
@@ -385,7 +389,7 @@ def carregar_dados(conteudo):
         dias = (df['Data Acionamento'] - df['Data']).dt.days
         df['Dias p/ Acionar'] = dias.where(dias >= 0)
 
-    return df
+    return df, duplicadas
 
 
 def formatar_data(valor, vazio='sem data'):
@@ -891,10 +895,12 @@ with st.container(key="cabecalho_painel"):
 
 if arquivo_upload:
     try:
-        df = carregar_dados(arquivo_upload.getvalue())
+        df, duplicadas = carregar_dados(arquivo_upload.getvalue())
     except Exception as erro:
         st.error(f"Não consegui ler o arquivo **{arquivo_upload.name}**: {erro}")
         st.stop()
+    if duplicadas:
+        st.warning(f"{duplicadas} linha(s) repetida(s) na planilha foram descartadas (eram idênticas a outra linha).")
     data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
 
     if not modo_consulta:
