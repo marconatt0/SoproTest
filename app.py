@@ -494,9 +494,15 @@ def historico_mensal(df, inicio=None, fim=None):
     """
     abertos = df.groupby('Mês Abertura').size().rename('Abertos')
     res = df[df['Categoria'] == 'Resolvido']
-    resolvidos = res.groupby('Mês Fechamento').size().rename('Resolvidos')
-    canc = df[df['Categoria'] == 'Cancelado']
-    cancelados = canc.groupby('Mês Fechamento').size().rename('Cancelados')
+    # Mês em que o chamado sai do backlog: fechamento; sem ele, acionamento; sem nenhum, abertura.
+    # Sem isso, concluídos/cancelados sem data de fechamento ficariam no backlog para sempre.
+    fechados = df[df['Categoria'].isin(['Resolvido', 'Cancelado'])]
+    saida = fechados['Mês Fechamento']
+    if 'Data Acionamento' in fechados.columns:
+        saida = saida.fillna(fechados['Data Acionamento'].dt.to_period('M').dt.to_timestamp())
+    saida = saida.fillna(fechados['Mês Abertura'])
+    resolvidos = saida[fechados['Categoria'] == 'Resolvido'].value_counts().rename('Resolvidos')
+    cancelados = saida[fechados['Categoria'] == 'Cancelado'].value_counts().rename('Cancelados')
     mediana = res.groupby('Mês Fechamento')['Dias p/ Resolver'].median().rename('Mediana Dias Resolução')
     media = res.groupby('Mês Fechamento')['Dias p/ Resolver'].mean().rename('Média Dias Resolução')
 
