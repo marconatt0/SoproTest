@@ -638,18 +638,23 @@ def responder_consulta(pergunta, df, data_ref):
     """Monta a resposta do assistente como uma lista de blocos {'texto': ..., 'tabela': DataFrame opcional}."""
     blocos = []
 
-    ids = [i.upper() for i in re.findall(r'SPR\d+', pergunta, flags=re.IGNORECASE)]
-    if ids and 'ID Sopro' in df.columns:
-        achados = df[df['ID Sopro'].astype(str).str.upper().isin(ids)]
-        if achados.empty:
-            blocos.append({'texto': f"Não encontrei o chamado **{', '.join(ids)}** nesta planilha."})
+    # ID do chamado: "SPR00072339", sem os zeros ("SPR72339") ou só o número ("72339")
+    numeros = [int(n) for n in re.findall(r'\bSPR0*(\d+)\b', pergunta, flags=re.IGNORECASE)]
+    numeros += [int(n) for n in re.findall(r'\b\d{3,}\b', pergunta)]
+    if numeros and 'ID Sopro' in df.columns:
+        num_df = pd.to_numeric(df['ID Sopro'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
+        achados = df[num_df.isin(numeros)]
+        existentes = set(num_df[num_df.isin(numeros)])
+        faltando = [f"SPR{n:08d}" for n in dict.fromkeys(numeros) if n not in existentes]
+        if faltando:
+            blocos.append({'texto': f"Não encontrei o chamado **{', '.join(faltando)}** nesta planilha."})
         for _, c in achados.iterrows():
             fechamento = c.get('Data Fechamento')
             fech_txt = f" · fechado em {formatar_data(fechamento)}" if pd.notna(fechamento) else ""
             blocos.append({'texto': f"**{c['ID Sopro']}** · estação **{c['Estação']}** · {c.get('Tipo', '')} — "
                                     f"{c.get('Descrição', '')} · aberto em {formatar_data(c['Data'])} · "
                                     f"status **{c['Status']}** · {c.get('Empresa', '')}{fech_txt}"})
-        if not re.sub(r'SPR\d+', '', pergunta, flags=re.IGNORECASE).strip():
+        if not re.sub(r'\bSPR\d+\b|\b\d{3,}\b', '', pergunta, flags=re.IGNORECASE).strip(' ,;e'):
             return blocos
 
     estacoes, sugestoes, nao_encontrados = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
