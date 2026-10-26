@@ -973,9 +973,9 @@ def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
     st.caption(titulo)
     col_mes, col_ano = st.columns([3, 2])
     mes = col_mes.selectbox(f"Mês ({titulo})", MESES, index=valor_inicial.month - 1,
-                            key=f'{key}_mes', label_visibility="collapsed")
+                            key=f'{key}_mes', label_visibility="collapsed", placeholder="Selecione")
     ano = col_ano.selectbox(f"Ano ({titulo})", anos, index=anos.index(valor_inicial.year),
-                            key=f'{key}_ano', label_visibility="collapsed")
+                            key=f'{key}_ano', label_visibility="collapsed", placeholder="Selecione")
     return pd.Timestamp(year=ano, month=MESES.index(mes) + 1, day=1)
 
 
@@ -1054,14 +1054,14 @@ if arquivo_upload:
         regionais = sorted(df[col_regional].unique().tolist())
         preparar_filtro('f_regional', ["TODAS"] + regionais, "TODAS")
         regional_selecionada = st.sidebar.selectbox("1. Regional (Estado):", options=["TODAS"] + regionais,
-                                                    key='f_regional')
+                                                    key='f_regional', placeholder="Selecione")
         if regional_selecionada != "TODAS":
             df_f0 = df_f0[df_f0[col_regional] == regional_selecionada]
 
     empresas_disponiveis = sorted(df_f0['Empresa'].dropna().astype(str).unique().tolist())
     preparar_filtro('f_empresa', ["TODAS"] + empresas_disponiveis, "TODAS")
     empresa_selecionada = st.sidebar.selectbox("2. Empresa Prestadora:", options=["TODAS"] + empresas_disponiveis,
-                                               key='f_empresa')
+                                               key='f_empresa', placeholder="Selecione")
 
     if empresa_selecionada != "TODAS":
         df_f1 = df_f0[df_f0['Empresa'] == empresa_selecionada]
@@ -1070,13 +1070,15 @@ if arquivo_upload:
 
     opcoes_status = ["TODOS"] + sorted(df_f1['Status'].unique().tolist())
     preparar_filtro('f_status', opcoes_status, "TODOS")
-    status_selecionado = st.sidebar.selectbox("3. Status do Chamado:", options=opcoes_status, key='f_status')
+    status_selecionado = st.sidebar.selectbox("3. Status do Chamado:", options=opcoes_status, key='f_status',
+                                              placeholder="Selecione")
 
     df_f2 = filtrar_status(df_f1, status_selecionado)
 
     sla_disponiveis = sorted(df_f2['SLA'].dropna().astype(str).unique().tolist())
     preparar_filtro('f_sla', ["TODOS"] + sla_disponiveis, "TODOS")
-    sla_selecionado = st.sidebar.selectbox("4. SLA:", options=["TODOS"] + sla_disponiveis, key='f_sla')
+    sla_selecionado = st.sidebar.selectbox("4. SLA:", options=["TODOS"] + sla_disponiveis, key='f_sla',
+                                           placeholder="Selecione")
 
     if sla_selecionado != "TODOS":
         df_f3 = df_f2[df_f2['SLA'].astype(str) == sla_selecionado]
@@ -1086,7 +1088,8 @@ if arquivo_upload:
     if 'Tipo' in df_f3.columns:
         tipos_disponiveis = sorted(df['Tipo'].unique().tolist())
         preparar_filtro('f_tipos', tipos_disponiveis, tipos_disponiveis)
-        tipos_selecionados = st.sidebar.multiselect("5. Tipo de Chamado:", options=tipos_disponiveis, key='f_tipos')
+        tipos_selecionados = st.sidebar.multiselect("5. Tipo de Chamado:", options=tipos_disponiveis, key='f_tipos',
+                                                    placeholder="Selecione")
         df_f4 = df_f3[df_f3['Tipo'].isin(tipos_selecionados)]
     else:
         df_f4 = df_f3
@@ -1094,7 +1097,7 @@ if arquivo_upload:
     estacoes_disponiveis = sorted(df_f4['Estação'].dropna().astype(str).unique().tolist())
     preparar_filtro('f_estacoes', estacoes_disponiveis, [])
     estacoes_selecionadas = st.sidebar.multiselect(
-        "6. Estações (Sites):", options=estacoes_disponiveis, key='f_estacoes',
+        "6. Estações (Sites):", options=estacoes_disponiveis, key='f_estacoes', placeholder="Todas (toque para escolher)",
         help="Deixe vazio para considerar todas as estações."
     )
 
@@ -1109,6 +1112,11 @@ if arquivo_upload:
         st.warning("Nenhum chamado encontrado com os filtros selecionados.")
         st.stop()
 
+    # No celular a barra lateral começa fechada e só aparece o ícone »: avisa onde ficam os filtros
+    st.html("<style>.dica-filtros{display:none} @media (max-width:640px){.dica-filtros{display:block;"
+            "padding:.6rem .8rem;border-radius:.5rem;background:#EEF4FF;color:#1F3A68;font-size:1rem}}</style>"
+            "<div class='dica-filtros'>🎯 <b>Filtros</b>: toque em <b>»</b> no canto superior esquerdo "
+            "para escolher período, estado, empresa e status.</div>")
     referencia = (f"Dados extraídos em **{extracao.strftime('%d/%m/%Y %H:%M')}**" if pd.notna(extracao) else
                   f"Dias em aberto contados até hoje, **{data_ref.strftime('%d/%m/%Y')}** "
                   f"(o nome do arquivo não traz a data da extração)")
@@ -1360,7 +1368,8 @@ if arquivo_upload:
                 st.plotly_chart(fig_box_emp, width='stretch')
 
             st.subheader("📉 Evolução mensal por empresa")
-            empresas_hist = st.multiselect("Empresas para comparar:", options=ordem, default=ordem[:5])
+            empresas_hist = st.multiselect("Empresas para comparar:", options=ordem, default=ordem[:5],
+                                           placeholder="Selecione")
             if empresas_hist:
                 base_h = df_emp_base[df_emp_base['Empresa'].isin(empresas_hist)]
                 res_h = base_h[base_h['Categoria'] == 'Resolvido']
