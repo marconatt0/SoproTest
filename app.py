@@ -511,6 +511,8 @@ def historico_mensal(df, inicio=None, fim=None):
     if 'Data Acionamento' in fechados.columns:
         saida = saida.fillna(fechados['Data Acionamento'].dt.to_period('M').dt.to_timestamp())
     saida = saida.fillna(fechados['Mês Abertura'])
+    # Fechamento antes da abertura (#013) pode cair antes do 1º mês do gráfico e nunca sair do backlog
+    saida = saida.mask(saida < fechados['Mês Abertura'], fechados['Mês Abertura'])
     resolvidos = saida[fechados['Categoria'] == 'Resolvido'].value_counts().rename('Resolvidos')
     cancelados = saida[fechados['Categoria'] == 'Cancelado'].value_counts().rename('Cancelados')
     mediana = res.groupby('Mês Fechamento')['Dias p/ Resolver'].median().rename('Mediana Dias Resolução')
