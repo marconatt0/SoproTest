@@ -682,7 +682,11 @@ def responder_consulta(pergunta, df, data_ref):
             'Tipos': ('Tipo', lambda x: ', '.join(sorted(x.unique()))),
         }).reset_index().sort_values('Chamados em aberto', ascending=False)
         resumo['Mais antigo'] = resumo['Mais antigo'].dt.strftime('%d/%m/%Y')
-        blocos.append({'texto': f"Encontrei **{len(estacoes)}** estações com esse início de código; "
+        # Lista digitada código a código ou busca pelo início do código (ex.: RSBGE)
+        digitadas = all(re.search(rf'\b{re.escape(str(e))}\b', pergunta, re.IGNORECASE) for e in estacoes)
+        origem = "Você pesquisou" if digitadas else "Encontrei"
+        complemento = "" if digitadas else " com esse início de código"
+        blocos.append({'texto': f"{origem} **{len(estacoes)}** estações{complemento}; "
                                 f"**{len(resumo)}** delas têm chamado em aberto. Toque numa estação "
                                 f"para ver os detalhes.",
                        'tabela': resumo if not resumo.empty else None})
