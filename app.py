@@ -777,9 +777,15 @@ CSS_BOTAO_CONSULTA = """
 .st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
 .st-key-botao_consulta button { border-radius: 999px; padding: 1.1rem 2rem; min-height: 4rem; font-weight: 700;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
-.st-key-botao_consulta button p { font-size: 1.25rem; }
+.st-key-botao_consulta button p, .st-key-botao_consulta button span { font-size: 1.25rem; }
+/* Espaço no fim da página para o último conteúdo não ficar embaixo do botão */
+[data-testid="stMainBlockContainer"] { padding-bottom: 7rem; }
+/* Celular: botão redondo só com o ícone; o texto continua para leitores de tela */
 @media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: 1rem; }
-  .st-key-botao_consulta button { padding: 0.9rem 1.5rem; min-height: 3.5rem; } }
+  .st-key-botao_consulta button { width: 3.75rem; height: 3.75rem; min-height: 0; padding: 0; justify-content: center; }
+  .st-key-botao_consulta button span { font-size: 1.6rem; margin: 0; }
+  .st-key-botao_consulta button p { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; } }
 </style>
 """
 
@@ -876,7 +882,7 @@ _ajuste_barra_topo = st.components.v2.component("ajuste_barra_topo", js=JS_BARRA
 def botao_consulta():
     # Fragmento: o clique só marca o modo de consulta e recarrega a página já na tela do chat
     st.html(CSS_BOTAO_CONSULTA)
-    if st.button("💬 Consultar estação", key="botao_consulta", type="primary",
+    if st.button("Consultar estação", icon="💬", key="botao_consulta", type="primary",
                  help="Ver se uma estação já tem chamado aberto"):
         st.session_state.modo_consulta = True
         st.rerun()
