@@ -1,5 +1,6 @@
 import datetime as dt
 import difflib
+import hashlib
 import io
 import re
 import unicodedata
@@ -38,8 +39,8 @@ def altura_barras(n):
 # ---------------------------------------------------------------------------
 # Classificação dos status do portal
 # ---------------------------------------------------------------------------
-STATUS_RESOLVIDO = ["concluído", "concluido", "fechado"]
-STATUS_CANCELADO = ["cancelado"]
+# Status do portal (comparados inteiros, sem acento/maiúscula) e a situação de cada um
+STATUS_CATEGORIA = {"em andamento": "Aberto", "concluido": "Resolvido", "cancelado pela sharing": "Cancelado"}
 # Status que não entram em nenhum cálculo nem relatório
 STATUS_EXCLUIDOS = ["aguardando número do chamado", "cancelado pela claro", "fechado pelo mso", "pendente claro"]
 
@@ -63,12 +64,12 @@ def status_excluido(status):
 
 
 def categorizar_status(status):
-    s = str(status).lower()
-    if any(k in s for k in STATUS_RESOLVIDO):
-        return "Resolvido"
-    if any(k in s for k in STATUS_CANCELADO):
-        return "Cancelado"
-    return "Aberto"
+    """Situação pela lista fechada; status desconhecido conta como Aberto (e é avisado na tela)."""
+    return STATUS_CATEGORIA.get(normalizar_texto(status), "Aberto")
+
+
+def status_desconhecidos(df):
+    return sorted({s for s in df['Status'].unique() if normalizar_texto(s) not in STATUS_CATEGORIA})
 
 
 CORES_NOMEADAS = {'red': 'FF0000', 'green': '008000', 'lime': '00FF00', 'darkgreen': '006400',
@@ -96,40 +97,27 @@ def classificar_cor(cor_hex):
     return "SEM SLA"
 
 
-def cor_sla(cell):
-    cor_hex = None
+def cor_celula(cell):
+    """Cor (hex) da fonte da célula do .xlsx ou, se não houver, do preenchimento."""
     if cell.font and cell.font.color and cell.font.color.type == 'rgb':
-        cor_hex = str(cell.font.color.rgb).upper()
-    elif cell.fill and cell.fill.fgColor and cell.fill.fgColor.type == 'rgb':
-        cor_hex = str(cell.fill.fgColor.rgb).upper()
-    return classificar_cor(cor_hex)
+        return str(cell.font.color.rgb).upper()
+    if cell.fill and cell.fill.fgColor and cell.fill.fgColor.type == 'rgb':
+        return str(cell.fill.fgColor.rgb).upper()
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Leitura da planilha: .xlsx e os três formatos que podem vir com extensão .xls
 # ---------------------------------------------------------------------------
 def _ler_xlsx(conteudo):
-    """Retorna (DataFrame, lista com o SLA de cada linha)."""
-    # 1. O pandas lê apenas o texto (onde aparece o ●)
-    df = pd.read_excel(io.BytesIO(conteudo), header=1)
-
-    # 2. O openpyxl lê a cor da célula de SLA
-    wb = openpyxl.load_workbook(io.BytesIO(conteudo), data_only=True)
-    ws = wb.active
-
-    sla_col_idx = None
-    for idx, cell in enumerate(ws[2], 1):
-        if cell.value and str(cell.value).strip().upper() == 'SLA':
-            sla_col_idx = idx
-            break
-
-    status_sla_cores = []
-    for row_idx in range(3, ws.max_row + 1):
-        if sla_col_idx:
-            status_sla_cores.append(cor_sla(ws.cell(row=row_idx, column=sla_col_idx)))
-        else:
-            status_sla_cores.append("SEM SLA")
-    return df, status_sla_cores
+    """.xlsx lido numa grade (valor + cor de cada célula), como os .xls: o cabeçalho é achado pela coluna
+    "Estação" em qualquer linha e datas em texto ("29/set/26") são convertidas."""
+    ws = openpyxl.load_workbook(io.BytesIO(conteudo), data_only=True).active
+    valores, cores = [], []
+    for linha in ws.iter_rows():
+        valores.append([c.value for c in linha])
+        cores.append([cor_celula(c) if c.value is not None else None for c in linha])
+    return _grade_para_dataframe(valores, cores)
 
 
 MESES_ABREVIADOS = {'jan': '01', 'fev': '02', 'mar': '03', 'abr': '04', 'mai': '05', 'jun': '06',
@@ -356,6 +344,10 @@ def ler_planilha(conteudo):
 @st.cache_data(show_spinner="Lendo planilha...")
 def carregar_dados(conteudo):
     df, status_sla_cores = ler_planilha(conteudo)
+    faltando = [c for c in ['Estação', 'Status', 'Empresa', 'Data'] if c not in df.columns]
+    if faltando:
+        raise ValueError(f"a planilha não tem a(s) coluna(s) {', '.join(faltando)}. "
+                         "Confira se é a exportação do Portal de Chamados.")
 
     status_sla_cores = status_sla_cores[:len(df)]
     if len(status_sla_cores) < len(df):
@@ -367,6 +359,16 @@ def carregar_dados(conteudo):
     df = df.rename(columns={'Data.1': 'Data Acionamento'})
 
     df = df.dropna(subset=['Estação'])
+    # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só, qualquer uma.
+    # O mesmo ID com empresa diferente continua na contagem, uma vez por empresa.
+    antes = len(df)
+    if 'ID Sopro' in df.columns:
+        sem_id = df['ID Sopro'].isna() | (df['ID Sopro'].astype(str).str.strip() == '')
+        df = pd.concat([df[~sem_id].drop_duplicates(subset=['ID Sopro', 'Empresa']),
+                        df[sem_id].drop_duplicates()]).sort_index()
+    else:
+        df = df.drop_duplicates()
+    duplicadas = antes - len(df)
     # Colunas com números e textos misturados (ex.: "1213/ 1214") viram texto para exibição
     for col in ['ID Atividade', 'ID Fornecedor', 'Chamado']:
         if col in df.columns:
@@ -398,7 +400,28 @@ def carregar_dados(conteudo):
         dias = (df['Data Acionamento'] - df['Data']).dt.days
         df['Dias p/ Acionar'] = dias.where(dias >= 0)
 
-    return df
+    return df, duplicadas
+
+
+def preparar_filtro(key, opcoes, padrao):
+    """Mantém a escolha do filtro entre execuções; só descarta o que saiu das opções atuais."""
+    atual = st.session_state.get(key, padrao)
+    if isinstance(padrao, list):
+        atual = [v for v in atual if v in opcoes]
+    elif atual not in opcoes:
+        atual = padrao
+    st.session_state[key] = atual
+
+
+def data_da_extracao(nome_arquivo):
+    """Data/hora da extração no nome do arquivo do portal (Chamados_AAAAMMDDhhmmss), ou None."""
+    m = re.search(r'Chamados_(\d{14})', nome_arquivo or '')
+    return pd.to_datetime(m.group(1), format='%Y%m%d%H%M%S', errors='coerce') if m else None
+
+
+def formatar_data(valor, vazio='sem data'):
+    """dd/mm/aaaa; data ausente (NaT/None) vira texto em vez de derrubar o app."""
+    return valor.strftime('%d/%m/%Y') if pd.notna(valor) else vazio
 
 
 def faixa_aging(dias):
@@ -481,9 +504,15 @@ def historico_mensal(df, inicio=None, fim=None):
     """
     abertos = df.groupby('Mês Abertura').size().rename('Abertos')
     res = df[df['Categoria'] == 'Resolvido']
-    resolvidos = res.groupby('Mês Fechamento').size().rename('Resolvidos')
-    canc = df[df['Categoria'] == 'Cancelado']
-    cancelados = canc.groupby('Mês Fechamento').size().rename('Cancelados')
+    # Mês em que o chamado sai do backlog: fechamento; sem ele, acionamento; sem nenhum, abertura.
+    # Sem isso, concluídos/cancelados sem data de fechamento ficariam no backlog para sempre.
+    fechados = df[df['Categoria'].isin(['Resolvido', 'Cancelado'])]
+    saida = fechados['Mês Fechamento']
+    if 'Data Acionamento' in fechados.columns:
+        saida = saida.fillna(fechados['Data Acionamento'].dt.to_period('M').dt.to_timestamp())
+    saida = saida.fillna(fechados['Mês Abertura'])
+    resolvidos = saida[fechados['Categoria'] == 'Resolvido'].value_counts().rename('Resolvidos')
+    cancelados = saida[fechados['Categoria'] == 'Cancelado'].value_counts().rename('Cancelados')
     mediana = res.groupby('Mês Fechamento')['Dias p/ Resolver'].median().rename('Mediana Dias Resolução')
     media = res.groupby('Mês Fechamento')['Dias p/ Resolver'].mean().rename('Média Dias Resolução')
 
@@ -509,6 +538,46 @@ def filtrar_status(df, status_selecionado):
     if status_selecionado != "TODOS":
         return df[df['Status'] == status_selecionado]
     return df
+
+
+def fechamento_antes_da_abertura(df):
+    """Chamados com Data Fechamento anterior à Data de abertura (erro de digitação no portal)."""
+    if 'Data Fechamento' not in df.columns:
+        return pd.DataFrame()
+    ruins = df[df['Data Fechamento'] < df['Data']].sort_values('Data Fechamento')
+    t = ruins[[c for c in ['ID Sopro', 'Estação', 'Status', 'Empresa', 'Data', 'Data Fechamento'] if c in df.columns]].copy()
+    for col in ['Data', 'Data Fechamento']:
+        t[col] = t[col].map(formatar_data)
+    return t.rename(columns={'Data': 'Aberto em', 'Data Fechamento': 'Fechado em'})
+
+
+def comparar_trimestres(hist, data_ref):
+    """Destaques dos últimos 3 meses completos contra os 3 anteriores."""
+    if hist.empty:
+        return []
+    # O mês da data de referência só entra se já tiver terminado
+    if (data_ref + pd.Timedelta(days=1)).month == data_ref.month:
+        hist = hist[hist['Mês'] < data_ref.to_period('M').to_timestamp()]
+    if len(hist) < 6:
+        return []
+    ult, ant = hist.tail(3), hist.iloc[-6:-3]
+    variacao = lambda novo, base: f"{pct(novo - base, base):+.1f}%" if base else "—"
+    meses = f"{ult['Mês'].iloc[0].strftime('%m/%Y')} a {ult['Mês'].iloc[-1].strftime('%m/%Y')}"
+    ab_u, ab_a = ult['Abertos'].sum(), ant['Abertos'].sum()
+    rs_u, rs_a = ult['Resolvidos'].sum(), ant['Resolvidos'].sum()
+    destaques = [f"Nos últimos 3 meses completos ({meses}) foram abertos **{ab_u}** chamados "
+                 f"({variacao(ab_u, ab_a)} vs. trimestre anterior) e resolvidos **{rs_u}** ({variacao(rs_u, rs_a)})."]
+    med_u, med_a = ult['Mediana Dias Resolução'].mean(), ant['Mediana Dias Resolução'].mean()
+    if pd.notna(med_u) and pd.notna(med_a):
+        tend = "melhorou" if med_u < med_a else "piorou"
+        destaques.append(f"O tempo mediano de resolução **{tend}**: {med_a:.0f} → {med_u:.0f} dias.")
+    saldo = ult['Saldo do Mês'].sum()
+    if saldo == 0:
+        destaques.append("O backlog **ficou estável** no último trimestre.")
+    else:
+        destaques.append(f"O backlog {'cresceu' if saldo > 0 else 'diminuiu'} **{abs(saldo)}** chamados "
+                         f"no último trimestre.")
+    return destaques
 
 
 def gerar_excel(abas):
@@ -544,7 +613,7 @@ def ranking_ocorrencias(df, filtro, titulo_periodo, escala, colunas_detalhe, opc
            'Resolvidos': ('Categoria', lambda x: (x == 'Resolvido').sum()),
            'Último Registro': ('Data', 'max')}
     ).reset_index().sort_values('Casos Registrados', ascending=False)
-    ranking['Último Registro'] = ranking['Último Registro'].dt.strftime('%d/%m/%Y')
+    ranking['Último Registro'] = ranking['Último Registro'].map(formatar_data)
 
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Chamados no período", len(df_sel))
@@ -588,24 +657,34 @@ MENSAGEM_AJUDA = (
 )
 
 
+def parece_codigo_estacao(token):
+    """Letras e números juntos (ex.: RSBGE02), sem ser ID de chamado (SPR...)."""
+    return bool(re.search(r'[A-Z]{2}', token) and re.search(r'\d', token)) and not re.match(r'SPR\d', token)
+
+
 def identificar_estacoes(pergunta, estacoes):
-    """Retorna (estações encontradas, sugestões) a partir do texto digitado pelo técnico."""
+    """Retorna (estações encontradas, sugestões, códigos digitados que não existem na planilha)."""
     mapa = {str(e).upper(): e for e in estacoes}
     tokens = [t.upper() for t in re.findall(r'[A-Za-z0-9]+', pergunta) if len(t) >= 4]
 
     encontradas = [mapa[t] for t in tokens if t in mapa]
     if encontradas:
-        return list(dict.fromkeys(encontradas)), []
+        nao_encontrados = [t for t in dict.fromkeys(tokens) if t not in mapa and parece_codigo_estacao(t)]
+        return list(dict.fromkeys(encontradas)), [], nao_encontrados
 
     # Início do código: "RSBGE" -> RSBGE02, RSBGE05...
     por_prefixo = [e for chave, e in sorted(mapa.items()) for t in tokens if chave.startswith(t)]
     if por_prefixo:
-        return list(dict.fromkeys(por_prefixo)), []
+        return list(dict.fromkeys(por_prefixo)), [], []
 
+    return [], sugestoes_parecidas(tokens, mapa), []
+
+
+def sugestoes_parecidas(tokens, mapa):
     sugestoes = []
     for t in tokens:
         sugestoes += difflib.get_close_matches(t, list(mapa), n=5, cutoff=0.75)
-    return [], [mapa[s] for s in dict.fromkeys(sugestoes)]
+    return [mapa[s] for s in dict.fromkeys(sugestoes)]
 
 
 def tabela_chamados(chamados, data_ref):
@@ -613,7 +692,7 @@ def tabela_chamados(chamados, data_ref):
     t['Dias em aberto'] = (data_ref - t['Data']).dt.days.where(t['Categoria'] == 'Aberto').astype('Int64')
     for col in ['Data', 'Data Fechamento']:
         if col in t.columns:
-            t[col] = t[col].dt.strftime('%d/%m/%Y')
+            t[col] = t[col].map(lambda v: formatar_data(v, None if col == 'Data Fechamento' else 'sem data'))
     # Colunas vazias (ex.: fechamento de chamados abertos) não aparecem
     return t[[c for c in COLUNAS_CONSULTA if c in t.columns]].dropna(axis=1, how='all').reset_index(drop=True)
 
@@ -622,21 +701,33 @@ def responder_consulta(pergunta, df, data_ref):
     """Monta a resposta do assistente como uma lista de blocos {'texto': ..., 'tabela': DataFrame opcional}."""
     blocos = []
 
-    ids = [i.upper() for i in re.findall(r'SPR\d+', pergunta, flags=re.IGNORECASE)]
-    if ids and 'ID Sopro' in df.columns:
-        achados = df[df['ID Sopro'].astype(str).str.upper().isin(ids)]
-        if achados.empty:
-            blocos.append({'texto': f"Não encontrei o chamado **{', '.join(ids)}** nesta planilha."})
+    # ID do chamado: "SPR00072339", sem os zeros ("SPR72339") ou só o número com 5+ dígitos ("72339")
+    numeros = [int(n) for n in re.findall(r'\bSPR0*(\d+)\b', pergunta, flags=re.IGNORECASE)]
+    numeros += [int(n) for n in re.findall(r'\b\d{5,}\b', pergunta)]
+    if numeros and 'ID Sopro' in df.columns:
+        num_df = pd.to_numeric(df['ID Sopro'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
+        achados = df[num_df.isin(numeros)]
+        existentes = set(num_df[num_df.isin(numeros)])
+        faltando = [f"SPR{n:08d}" for n in dict.fromkeys(numeros) if n not in existentes]
+        if faltando:
+            blocos.append({'texto': f"Não encontrei o chamado **{', '.join(faltando)}** nesta planilha."})
         for _, c in achados.iterrows():
             fechamento = c.get('Data Fechamento')
-            fech_txt = f" · fechado em {fechamento.strftime('%d/%m/%Y')}" if pd.notna(fechamento) else ""
+            fech_txt = f" · fechado em {formatar_data(fechamento)}" if pd.notna(fechamento) else ""
             blocos.append({'texto': f"**{c['ID Sopro']}** · estação **{c['Estação']}** · {c.get('Tipo', '')} — "
-                                    f"{c.get('Descrição', '')} · aberto em {c['Data'].strftime('%d/%m/%Y')} · "
+                                    f"{c.get('Descrição', '')} · aberto em {formatar_data(c['Data'])} · "
                                     f"status **{c['Status']}** · {c.get('Empresa', '')}{fech_txt}"})
-        if not re.sub(r'SPR\d+', '', pergunta, flags=re.IGNORECASE).strip():
+        if not re.sub(r'\bSPR\d+\b|\b\d{5,}\b', '', pergunta, flags=re.IGNORECASE).strip(' ,;e'):
             return blocos
 
-    estacoes, sugestoes = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
+    estacoes, sugestoes, nao_encontrados = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
+    # Códigos digitados junto com outros que existem: avisa em vez de ignorar em silêncio
+    mapa = {str(e).upper(): e for e in df['Estação'].dropna().unique()}
+    avisos = []
+    for cod in nao_encontrados:
+        parecidas = sugestoes_parecidas([cod], mapa)
+        avisos.append({'texto': f"⚠️ Não encontrei a estação **{cod}** nesta planilha."
+                                + (" Você quis dizer:" if parecidas else ""), 'estacoes': parecidas})
     if not estacoes:
         if blocos:
             return blocos
@@ -652,12 +743,21 @@ def responder_consulta(pergunta, df, data_ref):
             'Mais antigo': ('Data', 'min'),
             'Tipos': ('Tipo', lambda x: ', '.join(sorted(x.unique()))),
         }).reset_index().sort_values('Chamados em aberto', ascending=False)
-        resumo['Mais antigo'] = resumo['Mais antigo'].dt.strftime('%d/%m/%Y')
-        blocos.append({'texto': f"Encontrei **{len(estacoes)}** estações com esse início de código; "
-                                f"**{len(resumo)}** delas têm chamado em aberto. Toque numa estação "
+        resumo['Mais antigo'] = resumo['Mais antigo'].map(formatar_data)
+        com_aberto = len(resumo)
+        # Lista digitada código a código ou busca pelo início do código (ex.: RSBGE)
+        digitadas = all(re.search(rf'\b{re.escape(str(e))}\b', pergunta, re.IGNORECASE) for e in estacoes)
+        if digitadas:  # cada código digitado aparece, inclusive os sem chamado em aberto (🟢)
+            sem_aberto = [e for e in estacoes if e not in set(resumo['Estação'])]
+            resumo = pd.concat([resumo, pd.DataFrame({'Estação': sem_aberto, 'Chamados em aberto': 0,
+                                                      'Mais antigo': '', 'Tipos': ''})], ignore_index=True)
+        origem = "Você pesquisou" if digitadas else "Encontrei"
+        complemento = "" if digitadas else " com esse início de código"
+        blocos.append({'texto': f"{origem} **{len(estacoes)}** estações{complemento}; "
+                                f"**{com_aberto}** delas têm chamado em aberto. Toque numa estação "
                                 f"para ver os detalhes.",
                        'tabela': resumo if not resumo.empty else None})
-        return blocos
+        return blocos + avisos
 
     for est in estacoes:
         chamados = df[df['Estação'] == est]
@@ -674,18 +774,25 @@ def responder_consulta(pergunta, df, data_ref):
             else:
                 blocos.append({'texto': texto + f" Chamados registrados ({len(chamados)}):",
                                'tabela': tabela_chamados(chamados, data_ref)})
-    return blocos
+    return blocos + avisos
 
 
 # Botão flutuante, sempre visível no canto inferior direito, que abre o assistente em tela cheia
 CSS_BOTAO_CONSULTA = """
 <style>
-.st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
+/* 15px acima do padrão para não ficar atrás do botão do Streamlit no canto inferior direito */
+.st-key-botao_consulta { position: fixed; right: 2rem; bottom: calc(2rem + 15px); z-index: 999; width: auto !important; }
 .st-key-botao_consulta button { border-radius: 999px; padding: 1.1rem 2rem; min-height: 4rem; font-weight: 700;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
-.st-key-botao_consulta button p { font-size: 1.25rem; }
-@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: 1rem; }
-  .st-key-botao_consulta button { padding: 0.9rem 1.5rem; min-height: 3.5rem; } }
+.st-key-botao_consulta button p, .st-key-botao_consulta button span { font-size: 1.25rem; }
+/* Espaço no fim da página para o último conteúdo não ficar embaixo do botão */
+[data-testid="stMainBlockContainer"] { padding-bottom: 7rem; }
+/* Celular: botão redondo só com o ícone; o texto continua para leitores de tela */
+@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: calc(1rem + 15px); }
+  .st-key-botao_consulta button { width: 3.75rem; height: 3.75rem; min-height: 0; padding: 0; justify-content: center; }
+  .st-key-botao_consulta button span { font-size: 1.6rem; margin: 0; }
+  .st-key-botao_consulta button p { position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0 0 0 0); white-space: nowrap; } }
 </style>
 """
 
@@ -782,7 +889,7 @@ _ajuste_barra_topo = st.components.v2.component("ajuste_barra_topo", js=JS_BARRA
 def botao_consulta():
     # Fragmento: o clique só marca o modo de consulta e recarrega a página já na tela do chat
     st.html(CSS_BOTAO_CONSULTA)
-    if st.button("💬 Consultar estação", key="botao_consulta", type="primary",
+    if st.button("Consultar estação", icon="💬", key="botao_consulta", type="primary",
                  help="Ver se uma estação já tem chamado aberto"):
         st.session_state.modo_consulta = True
         st.rerun()
@@ -817,8 +924,11 @@ def mostrar_cartoes(tabela, key):
                         st.write(obs)
             else:  # resumo de um grupo de estações (busca pelo início do código)
                 botao_pesquisar(linha['Estação'], f'grp_{key}_{n}')
-                st.caption(f"**{linha['Chamados em aberto']} em aberto** · mais antigo: {linha['Mais antigo']}"
-                           f" · {linha['Tipos']}")
+                if linha['Chamados em aberto']:
+                    st.caption(f"🔴 **{linha['Chamados em aberto']} em aberto** · mais antigo: "
+                               f"{linha['Mais antigo']} · {linha['Tipos']}")
+                else:
+                    st.caption("🟢 sem chamado em aberto")
 
 
 def tela_consulta(df, data_ref):
@@ -870,9 +980,9 @@ def seletor_mes_ano(titulo, key, valor_inicial, ano_min, ano_max):
     st.caption(titulo)
     col_mes, col_ano = st.columns([3, 2])
     mes = col_mes.selectbox(f"Mês ({titulo})", MESES, index=valor_inicial.month - 1,
-                            key=f'{key}_mes', label_visibility="collapsed")
+                            key=f'{key}_mes', label_visibility="collapsed", placeholder="Selecione")
     ano = col_ano.selectbox(f"Ano ({titulo})", anos, index=anos.index(valor_inicial.year),
-                            key=f'{key}_ano', label_visibility="collapsed")
+                            key=f'{key}_ano', label_visibility="collapsed", placeholder="Selecione")
     return pd.Timestamp(year=ano, month=MESES.index(mes) + 1, day=1)
 
 
@@ -899,11 +1009,24 @@ with st.container(key="cabecalho_painel"):
 
 if arquivo_upload:
     try:
-        df = carregar_dados(arquivo_upload.getvalue())
+        df, duplicadas = carregar_dados(arquivo_upload.getvalue())
     except Exception as erro:
         st.error(f"Não consegui ler o arquivo **{arquivo_upload.name}**: {erro}")
         st.stop()
-    data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
+    if duplicadas:
+        st.warning(f"{duplicadas} linha(s) repetida(s) na planilha foram descartadas (mesmo ID Sopro e mesma empresa de outra linha).")
+    desconhecidos = status_desconhecidos(df)
+    if desconhecidos:
+        st.warning(f"Status não reconhecido(s): {', '.join(desconhecidos)}. Foram contados como **em aberto**; "
+                   "avise para incluí-los na lista de status.")
+    # A conversa do chat vale para o arquivo carregado: arquivo diferente, conversa nova
+    impressao = hashlib.md5(arquivo_upload.getvalue()).hexdigest()
+    if st.session_state.get('arquivo_do_chat') != impressao:
+        st.session_state.pop('chat_consulta', None)
+        st.session_state['arquivo_do_chat'] = impressao
+    # "Dias em aberto" e idade do backlog contam até a extração do arquivo; sem a data no nome, até hoje
+    extracao = data_da_extracao(arquivo_upload.name)
+    data_ref = (extracao if pd.notna(extracao) else pd.Timestamp.today()).normalize()
 
     if not modo_consulta:
         botao_consulta()
@@ -940,27 +1063,33 @@ if arquivo_upload:
     col_regional = next((c for c in ['UF', 'Regional'] if c in df.columns), None)
     if col_regional:
         regionais = sorted(df[col_regional].unique().tolist())
-        regional_selecionada = st.sidebar.selectbox("1. Regional (Estado):", options=["TODAS"] + regionais)
+        preparar_filtro('f_regional', ["TODAS"] + regionais, "TODAS")
+        regional_selecionada = st.sidebar.selectbox("1. Regional (Estado):", options=["TODAS"] + regionais,
+                                                    key='f_regional', placeholder="Selecione")
         if regional_selecionada != "TODAS":
             df_f0 = df_f0[df_f0[col_regional] == regional_selecionada]
 
     empresas_disponiveis = sorted(df_f0['Empresa'].dropna().astype(str).unique().tolist())
-    empresa_selecionada = st.sidebar.selectbox("2. Empresa Prestadora:", options=["TODAS"] + empresas_disponiveis)
+    preparar_filtro('f_empresa', ["TODAS"] + empresas_disponiveis, "TODAS")
+    empresa_selecionada = st.sidebar.selectbox("2. Empresa Prestadora:", options=["TODAS"] + empresas_disponiveis,
+                                               key='f_empresa', placeholder="Selecione")
 
     if empresa_selecionada != "TODAS":
         df_f1 = df_f0[df_f0['Empresa'] == empresa_selecionada]
     else:
         df_f1 = df_f0
 
-    status_selecionado = st.sidebar.selectbox(
-        "3. Status do Chamado:",
-        options=["TODOS"] + sorted(df_f1['Status'].unique().tolist())
-    )
+    opcoes_status = ["TODOS"] + sorted(df_f1['Status'].unique().tolist())
+    preparar_filtro('f_status', opcoes_status, "TODOS")
+    status_selecionado = st.sidebar.selectbox("3. Status do Chamado:", options=opcoes_status, key='f_status',
+                                              placeholder="Selecione")
 
     df_f2 = filtrar_status(df_f1, status_selecionado)
 
     sla_disponiveis = sorted(df_f2['SLA'].dropna().astype(str).unique().tolist())
-    sla_selecionado = st.sidebar.selectbox("4. SLA:", options=["TODOS"] + sla_disponiveis)
+    preparar_filtro('f_sla', ["TODOS"] + sla_disponiveis, "TODOS")
+    sla_selecionado = st.sidebar.selectbox("4. SLA:", options=["TODOS"] + sla_disponiveis, key='f_sla',
+                                           placeholder="Selecione")
 
     if sla_selecionado != "TODOS":
         df_f3 = df_f2[df_f2['SLA'].astype(str) == sla_selecionado]
@@ -969,15 +1098,17 @@ if arquivo_upload:
 
     if 'Tipo' in df_f3.columns:
         tipos_disponiveis = sorted(df['Tipo'].unique().tolist())
-        tipos_selecionados = st.sidebar.multiselect("5. Tipo de Chamado:", options=tipos_disponiveis,
-                                                    default=tipos_disponiveis)
+        preparar_filtro('f_tipos', tipos_disponiveis, tipos_disponiveis)
+        tipos_selecionados = st.sidebar.multiselect("5. Tipo de Chamado:", options=tipos_disponiveis, key='f_tipos',
+                                                    placeholder="Selecione")
         df_f4 = df_f3[df_f3['Tipo'].isin(tipos_selecionados)]
     else:
         df_f4 = df_f3
 
     estacoes_disponiveis = sorted(df_f4['Estação'].dropna().astype(str).unique().tolist())
+    preparar_filtro('f_estacoes', estacoes_disponiveis, [])
     estacoes_selecionadas = st.sidebar.multiselect(
-        "6. Estações (Sites):", options=estacoes_disponiveis,
+        "6. Estações (Sites):", options=estacoes_disponiveis, key='f_estacoes', placeholder="Todas (toque para escolher)",
         help="Deixe vazio para considerar todas as estações."
     )
 
@@ -992,8 +1123,15 @@ if arquivo_upload:
         st.warning("Nenhum chamado encontrado com os filtros selecionados.")
         st.stop()
 
-    st.caption(f"Data de referência da planilha (último chamado aberto): **{data_ref.strftime('%d/%m/%Y')}** · "
-               f"{len(df_final)} chamados no filtro atual")
+    # No celular a barra lateral começa fechada e só aparece o ícone »: avisa onde ficam os filtros
+    st.html("<style>.dica-filtros{display:none} @media (max-width:640px){.dica-filtros{display:block;"
+            "padding:.6rem .8rem;border-radius:.5rem;background:#EEF4FF;color:#1F3A68;font-size:1rem}}</style>"
+            "<div class='dica-filtros'>🎯 <b>Filtros</b>: toque em <b>»</b> no canto superior esquerdo "
+            "para escolher período, estado, empresa e status.</div>")
+    referencia = (f"Dados extraídos em **{extracao.strftime('%d/%m/%Y %H:%M')}**" if pd.notna(extracao) else
+                  f"Dias em aberto contados até hoje, **{data_ref.strftime('%d/%m/%Y')}** "
+                  f"(o nome do arquivo não traz a data da extração)")
+    st.caption(f"{referencia} · {len(df_final)} chamados no filtro atual")
 
     aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "📊 Visão Geral", "📈 Histórico de Resolução", "🏢 Eficiência por Empresa",
@@ -1068,10 +1206,11 @@ if arquivo_upload:
             st.dataframe(df_final, width='stretch')
 
             csv_detalhado = df_final.to_csv(index=False, sep=';').encode('utf-8-sig')
+            nome_arquivo = re.sub(r'[^\w-]+', '_', empresa_selecionada).strip('_')  # "OI S/A" -> "OI_S_A"
             st.download_button(
                 label=f"Baixar Dados Detalhados - {empresa_selecionada} (CSV)",
                 data=csv_detalhado,
-                file_name=f'dados_detalhados_{empresa_selecionada}.csv',
+                file_name=f"dados_detalhados_{nome_arquivo}.csv",
                 mime='text/csv',
             )
 
@@ -1154,6 +1293,12 @@ if arquivo_upload:
                 hist_tab['Mês'] = hist_tab['Mês'].dt.strftime('%m/%Y')
                 st.dataframe(hist_tab, width='stretch', hide_index=True)
 
+        incons = fechamento_antes_da_abertura(df_final)
+        if not incons.empty:
+            with st.expander(f"⚠️ Inconsistências da planilha: {len(incons)} chamado(s) fechado(s) antes da abertura"):
+                st.caption("Ficam fora do tempo de resolução, mas contam como fechados no mês da data de fechamento.")
+                st.dataframe(incons, width='stretch', hide_index=True)
+
     # ------------------------------------------------------- Eficiência por Empresa
     with aba3:
         st.subheader("🏢 Eficiência das Empresas Prestadoras")
@@ -1234,7 +1379,8 @@ if arquivo_upload:
                 st.plotly_chart(fig_box_emp, width='stretch')
 
             st.subheader("📉 Evolução mensal por empresa")
-            empresas_hist = st.multiselect("Empresas para comparar:", options=ordem, default=ordem[:5])
+            empresas_hist = st.multiselect("Empresas para comparar:", options=ordem, default=ordem[:5],
+                                           placeholder="Selecione")
             if empresas_hist:
                 base_h = df_emp_base[df_emp_base['Empresa'].isin(empresas_hist)]
                 res_h = base_h[base_h['Categoria'] == 'Resolvido']
@@ -1283,22 +1429,7 @@ if arquivo_upload:
         abertos = df_final[df_final['Categoria'] == 'Aberto'].copy()
         abertos['Idade (dias)'] = (data_ref - abertos['Data']).dt.days
 
-        # Comparação dos últimos 3 meses fechados com os 3 anteriores
-        destaques = []
-        if len(hist) >= 6:
-            ult, ant = hist.tail(3), hist.iloc[-6:-3]
-            ab_u, ab_a = ult['Abertos'].sum(), ant['Abertos'].sum()
-            rs_u, rs_a = ult['Resolvidos'].sum(), ant['Resolvidos'].sum()
-            var_ab = pct(ab_u - ab_a, ab_a)
-            var_rs = pct(rs_u - rs_a, rs_a)
-            destaques.append(f"Nos últimos 3 meses foram abertos **{ab_u}** chamados "
-                             f"({var_ab:+.1f}% vs. trimestre anterior) e resolvidos **{rs_u}** ({var_rs:+.1f}%).")
-            med_u, med_a = ult['Mediana Dias Resolução'].mean(), ant['Mediana Dias Resolução'].mean()
-            if pd.notna(med_u) and pd.notna(med_a):
-                tend = "melhorou" if med_u < med_a else "piorou"
-                destaques.append(f"O tempo mediano de resolução **{tend}**: {med_a:.0f} → {med_u:.0f} dias.")
-            saldo = ult['Saldo do Mês'].sum()
-            destaques.append(f"O backlog {'cresceu' if saldo > 0 else 'diminuiu'} **{abs(saldo)}** chamados no último trimestre.")
+        destaques = comparar_trimestres(hist, data_ref)
 
         if not abertos.empty:
             mais90 = int((abertos['Idade (dias)'] > 90).sum())
@@ -1390,10 +1521,19 @@ if arquivo_upload:
 
     # ------------------------------------------------------------- Ninhos / Zeladoria
     colunas_det = ['ID Sopro', 'Data', 'Estação', 'Tipo', 'Descrição', 'Empresa', 'Status', 'Data Fechamento']
+    # Estas abas usam período, regional e empresa; os demais filtros não se aplicam (avisa quando estão ativos)
+    ignorados = [nome for nome, ativo in [
+        ("status", status_selecionado != "TODOS"), ("SLA", sla_selecionado != "TODOS"),
+        ("tipo", 'Tipo' in df.columns and set(tipos_selecionados) != set(tipos_disponiveis)),
+        ("estações", bool(estacoes_selecionadas))] if ativo]
+    aviso_ignorados = (f"Os filtros de {', '.join(ignorados)} da barra lateral não se aplicam a esta aba: ela mostra "
+                       "todos os casos do período, da regional e da empresa escolhidos.") if ignorados else None
 
     with aba5:
         st.subheader("🚨 Sites com Maior Incidência de Ninhos")
         st.write("Sites que mais geram chamado de ninhos")
+        if aviso_ignorados:
+            st.info(aviso_ignorados)
         ranking_ocorrencias(
             df_f1, lambda d: d['Descrição'].astype(str).str.contains('Insetos Ou Ninhos', case=False, na=False),
             "Ninhos", 'Reds', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
@@ -1403,6 +1543,8 @@ if arquivo_upload:
     with aba6:
         st.subheader("🌿 Sites com Maior Incidência de Problemas de Zeladoria")
         st.write("Monitore as estações que mais demandaram serviços de zeladoria no histórico recente.")
+        if aviso_ignorados:
+            st.info(aviso_ignorados)
         ranking_ocorrencias(
             df_f1, lambda d: d['Tipo'].astype(str).str.contains('Zeladoria', case=False, na=False),
             "Zeladoria", 'Greens', colunas_det, {"Últimos 3 meses": 3, "Últimos 6 meses": 6, "Últimos 12 meses": 12},
