@@ -594,24 +594,34 @@ MENSAGEM_AJUDA = (
 )
 
 
+def parece_codigo_estacao(token):
+    """Letras e números juntos (ex.: RSBGE02), sem ser ID de chamado (SPR...)."""
+    return bool(re.search(r'[A-Z]{2}', token) and re.search(r'\d', token)) and not re.match(r'SPR\d', token)
+
+
 def identificar_estacoes(pergunta, estacoes):
-    """Retorna (estações encontradas, sugestões) a partir do texto digitado pelo técnico."""
+    """Retorna (estações encontradas, sugestões, códigos digitados que não existem na planilha)."""
     mapa = {str(e).upper(): e for e in estacoes}
     tokens = [t.upper() for t in re.findall(r'[A-Za-z0-9]+', pergunta) if len(t) >= 4]
 
     encontradas = [mapa[t] for t in tokens if t in mapa]
     if encontradas:
-        return list(dict.fromkeys(encontradas)), []
+        nao_encontrados = [t for t in dict.fromkeys(tokens) if t not in mapa and parece_codigo_estacao(t)]
+        return list(dict.fromkeys(encontradas)), [], nao_encontrados
 
     # Início do código: "RSBGE" -> RSBGE02, RSBGE05...
     por_prefixo = [e for chave, e in sorted(mapa.items()) for t in tokens if chave.startswith(t)]
     if por_prefixo:
-        return list(dict.fromkeys(por_prefixo)), []
+        return list(dict.fromkeys(por_prefixo)), [], []
 
+    return [], sugestoes_parecidas(tokens, mapa), []
+
+
+def sugestoes_parecidas(tokens, mapa):
     sugestoes = []
     for t in tokens:
         sugestoes += difflib.get_close_matches(t, list(mapa), n=5, cutoff=0.75)
-    return [], [mapa[s] for s in dict.fromkeys(sugestoes)]
+    return [mapa[s] for s in dict.fromkeys(sugestoes)]
 
 
 def tabela_chamados(chamados, data_ref):
@@ -642,7 +652,14 @@ def responder_consulta(pergunta, df, data_ref):
         if not re.sub(r'SPR\d+', '', pergunta, flags=re.IGNORECASE).strip():
             return blocos
 
-    estacoes, sugestoes = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
+    estacoes, sugestoes, nao_encontrados = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
+    # Códigos digitados junto com outros que existem: avisa em vez de ignorar em silêncio
+    mapa = {str(e).upper(): e for e in df['Estação'].dropna().unique()}
+    avisos = []
+    for cod in nao_encontrados:
+        parecidas = sugestoes_parecidas([cod], mapa)
+        avisos.append({'texto': f"⚠️ Não encontrei a estação **{cod}** nesta planilha."
+                                + (" Você quis dizer:" if parecidas else ""), 'estacoes': parecidas})
     if not estacoes:
         if blocos:
             return blocos
@@ -663,7 +680,7 @@ def responder_consulta(pergunta, df, data_ref):
                                 f"**{len(resumo)}** delas têm chamado em aberto. Toque numa estação "
                                 f"para ver os detalhes.",
                        'tabela': resumo if not resumo.empty else None})
-        return blocos
+        return blocos + avisos
 
     for est in estacoes:
         chamados = df[df['Estação'] == est]
@@ -680,7 +697,7 @@ def responder_consulta(pergunta, df, data_ref):
             else:
                 blocos.append({'texto': texto + f" Chamados registrados ({len(chamados)}):",
                                'tabela': tabela_chamados(chamados, data_ref)})
-    return blocos
+    return blocos + avisos
 
 
 # Botão flutuante, sempre visível no canto inferior direito, que abre o assistente em tela cheia
