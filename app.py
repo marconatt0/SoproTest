@@ -1181,10 +1181,11 @@ if arquivo_upload:
             st.dataframe(df_final, width='stretch')
 
             csv_detalhado = df_final.to_csv(index=False, sep=';').encode('utf-8-sig')
+            nome_arquivo = re.sub(r'[^\w-]+', '_', empresa_selecionada).strip('_')  # "OI S/A" -> "OI_S_A"
             st.download_button(
                 label=f"Baixar Dados Detalhados - {empresa_selecionada} (CSV)",
                 data=csv_detalhado,
-                file_name=f'dados_detalhados_{empresa_selecionada}.csv',
+                file_name=f"dados_detalhados_{nome_arquivo}.csv",
                 mime='text/csv',
             )
 
