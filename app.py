@@ -1,5 +1,6 @@
 import datetime as dt
 import difflib
+import hashlib
 import io
 import re
 import unicodedata
@@ -933,6 +934,11 @@ if arquivo_upload:
         st.stop()
     if duplicadas:
         st.warning(f"{duplicadas} linha(s) repetida(s) na planilha foram descartadas (eram idênticas a outra linha).")
+    # A conversa do chat vale para o arquivo carregado: arquivo diferente, conversa nova
+    impressao = hashlib.md5(arquivo_upload.getvalue()).hexdigest()
+    if st.session_state.get('arquivo_do_chat') != impressao:
+        st.session_state.pop('chat_consulta', None)
+        st.session_state['arquivo_do_chat'] = impressao
     data_ref = df['Data'].max() if 'Data' in df.columns else pd.Timestamp.today()
 
     if not modo_consulta:
