@@ -96,40 +96,27 @@ def classificar_cor(cor_hex):
     return "SEM SLA"
 
 
-def cor_sla(cell):
-    cor_hex = None
+def cor_celula(cell):
+    """Cor (hex) da fonte da célula do .xlsx ou, se não houver, do preenchimento."""
     if cell.font and cell.font.color and cell.font.color.type == 'rgb':
-        cor_hex = str(cell.font.color.rgb).upper()
-    elif cell.fill and cell.fill.fgColor and cell.fill.fgColor.type == 'rgb':
-        cor_hex = str(cell.fill.fgColor.rgb).upper()
-    return classificar_cor(cor_hex)
+        return str(cell.font.color.rgb).upper()
+    if cell.fill and cell.fill.fgColor and cell.fill.fgColor.type == 'rgb':
+        return str(cell.fill.fgColor.rgb).upper()
+    return None
 
 
 # ---------------------------------------------------------------------------
 # Leitura da planilha: .xlsx e os três formatos que podem vir com extensão .xls
 # ---------------------------------------------------------------------------
 def _ler_xlsx(conteudo):
-    """Retorna (DataFrame, lista com o SLA de cada linha)."""
-    # 1. O pandas lê apenas o texto (onde aparece o ●)
-    df = pd.read_excel(io.BytesIO(conteudo), header=1)
-
-    # 2. O openpyxl lê a cor da célula de SLA
-    wb = openpyxl.load_workbook(io.BytesIO(conteudo), data_only=True)
-    ws = wb.active
-
-    sla_col_idx = None
-    for idx, cell in enumerate(ws[2], 1):
-        if cell.value and str(cell.value).strip().upper() == 'SLA':
-            sla_col_idx = idx
-            break
-
-    status_sla_cores = []
-    for row_idx in range(3, ws.max_row + 1):
-        if sla_col_idx:
-            status_sla_cores.append(cor_sla(ws.cell(row=row_idx, column=sla_col_idx)))
-        else:
-            status_sla_cores.append("SEM SLA")
-    return df, status_sla_cores
+    """.xlsx lido numa grade (valor + cor de cada célula), como os .xls: o cabeçalho é achado pela coluna
+    "Estação" em qualquer linha e datas em texto ("29/set/26") são convertidas."""
+    ws = openpyxl.load_workbook(io.BytesIO(conteudo), data_only=True).active
+    valores, cores = [], []
+    for linha in ws.iter_rows():
+        valores.append([c.value for c in linha])
+        cores.append([cor_celula(c) if c.value is not None else None for c in linha])
+    return _grade_para_dataframe(valores, cores)
 
 
 MESES_ABREVIADOS = {'jan': '01', 'fev': '02', 'mar': '03', 'abr': '04', 'mai': '05', 'jun': '06',
