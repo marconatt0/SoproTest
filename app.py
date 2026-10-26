@@ -1005,7 +1005,11 @@ st.html("<style>.st-key-ajuste_barra_topo { display: none; }"
         # Nomes longos (ex.: empresa mais eficiente) quebram linha em vez de ficarem cortados
         "[data-testid=stMetricValue] p { white-space: normal !important; overflow-wrap: anywhere; }"
         # No celular, a barra de ferramentas dos gráficos só atrapalha o toque
-        "@media (max-width: 640px) { .modebar-container { display: none !important; } }</style>")
+        "@media (max-width: 640px) { .modebar-container { display: none !important; } }"
+        # Textos do envio de arquivo em português (o Streamlit não traduz esse componente)
+        "[data-testid=stFileUploaderDropzone] button p, [data-testid=stFileUploaderDropzoneInstructions] span { font-size: 0; }"
+        "[data-testid=stFileUploaderDropzone] button p::after { content: 'Escolher arquivo'; font-size: 1rem; }"
+        "[data-testid=stFileUploaderDropzoneInstructions] span::after { content: 'Até 200 MB · .xls ou .xlsx'; font-size: 0.875rem; }</style>")
 _ajuste_barra_topo(key="ajuste_barra_topo")
 
 with st.container(key="cabecalho_painel"):
@@ -1532,7 +1536,7 @@ if arquivo_upload:
         ("status", status_selecionado != "TODOS"), ("SLA", sla_selecionado != "TODOS"),
         ("tipo", 'Tipo' in df.columns and set(tipos_selecionados) != set(tipos_disponiveis)),
         ("estações", bool(estacoes_selecionadas))] if ativo]
-    aviso_ignorados = (f"Os filtros de {', '.join(ignorados)} da barra lateral não se aplicam a esta aba: ela mostra "
+    aviso_ignorados = (f"Os filtros de {' e '.join([', '.join(ignorados[:-1]), ignorados[-1]] if len(ignorados) > 1 else ignorados)} da barra lateral não se aplicam a esta aba: ela mostra "
                        "todos os casos do período, da regional e da empresa escolhidos.") if ignorados else None
 
     with aba5:
