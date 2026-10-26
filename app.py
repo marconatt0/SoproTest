@@ -780,14 +780,15 @@ def responder_consulta(pergunta, df, data_ref):
 # Botão flutuante, sempre visível no canto inferior direito, que abre o assistente em tela cheia
 CSS_BOTAO_CONSULTA = """
 <style>
-.st-key-botao_consulta { position: fixed; right: 2rem; bottom: 2rem; z-index: 999; width: auto !important; }
+/* 15px acima do padrão para não ficar atrás do botão do Streamlit no canto inferior direito */
+.st-key-botao_consulta { position: fixed; right: 2rem; bottom: calc(2rem + 15px); z-index: 999; width: auto !important; }
 .st-key-botao_consulta button { border-radius: 999px; padding: 1.1rem 2rem; min-height: 4rem; font-weight: 700;
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25); }
 .st-key-botao_consulta button p, .st-key-botao_consulta button span { font-size: 1.25rem; }
 /* Espaço no fim da página para o último conteúdo não ficar embaixo do botão */
 [data-testid="stMainBlockContainer"] { padding-bottom: 7rem; }
 /* Celular: botão redondo só com o ícone; o texto continua para leitores de tela */
-@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: 1rem; }
+@media (max-width: 640px) { .st-key-botao_consulta { right: 1rem; bottom: calc(1rem + 15px); }
   .st-key-botao_consulta button { width: 3.75rem; height: 3.75rem; min-height: 0; padding: 0; justify-content: center; }
   .st-key-botao_consulta button span { font-size: 1.6rem; margin: 0; }
   .st-key-botao_consulta button p { position: absolute; width: 1px; height: 1px; overflow: hidden;
