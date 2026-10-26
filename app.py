@@ -359,9 +359,15 @@ def carregar_dados(conteudo):
     df = df.rename(columns={'Data.1': 'Data Acionamento'})
 
     df = df.dropna(subset=['Estação'])
-    # Linhas 100% iguais (exportação repetida) contariam o chamado em dobro
+    # Chamado repetido (mesmo ID Sopro e mesma empresa) contaria em dobro: fica uma linha só, qualquer uma.
+    # O mesmo ID com empresa diferente continua na contagem, uma vez por empresa.
     antes = len(df)
-    df = df.drop_duplicates()
+    if 'ID Sopro' in df.columns:
+        sem_id = df['ID Sopro'].isna() | (df['ID Sopro'].astype(str).str.strip() == '')
+        df = pd.concat([df[~sem_id].drop_duplicates(subset=['ID Sopro', 'Empresa']),
+                        df[sem_id].drop_duplicates()]).sort_index()
+    else:
+        df = df.drop_duplicates()
     duplicadas = antes - len(df)
     # Colunas com números e textos misturados (ex.: "1213/ 1214") viram texto para exibição
     for col in ['ID Atividade', 'ID Fornecedor', 'Chamado']:
@@ -1007,7 +1013,7 @@ if arquivo_upload:
         st.error(f"Não consegui ler o arquivo **{arquivo_upload.name}**: {erro}")
         st.stop()
     if duplicadas:
-        st.warning(f"{duplicadas} linha(s) repetida(s) na planilha foram descartadas (eram idênticas a outra linha).")
+        st.warning(f"{duplicadas} linha(s) repetida(s) na planilha foram descartadas (mesmo ID Sopro e mesma empresa de outra linha).")
     desconhecidos = status_desconhecidos(df)
     if desconhecidos:
         st.warning(f"Status não reconhecido(s): {', '.join(desconhecidos)}. Foram contados como **em aberto**; "
