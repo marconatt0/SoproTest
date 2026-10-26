@@ -645,9 +645,9 @@ def responder_consulta(pergunta, df, data_ref):
     """Monta a resposta do assistente como uma lista de blocos {'texto': ..., 'tabela': DataFrame opcional}."""
     blocos = []
 
-    # ID do chamado: "SPR00072339", sem os zeros ("SPR72339") ou só o número ("72339")
+    # ID do chamado: "SPR00072339", sem os zeros ("SPR72339") ou só o número com 5+ dígitos ("72339")
     numeros = [int(n) for n in re.findall(r'\bSPR0*(\d+)\b', pergunta, flags=re.IGNORECASE)]
-    numeros += [int(n) for n in re.findall(r'\b\d{3,}\b', pergunta)]
+    numeros += [int(n) for n in re.findall(r'\b\d{5,}\b', pergunta)]
     if numeros and 'ID Sopro' in df.columns:
         num_df = pd.to_numeric(df['ID Sopro'].astype(str).str.extract(r'(\d+)')[0], errors='coerce')
         achados = df[num_df.isin(numeros)]
@@ -661,7 +661,7 @@ def responder_consulta(pergunta, df, data_ref):
             blocos.append({'texto': f"**{c['ID Sopro']}** · estação **{c['Estação']}** · {c.get('Tipo', '')} — "
                                     f"{c.get('Descrição', '')} · aberto em {formatar_data(c['Data'])} · "
                                     f"status **{c['Status']}** · {c.get('Empresa', '')}{fech_txt}"})
-        if not re.sub(r'\bSPR\d+\b|\b\d{3,}\b', '', pergunta, flags=re.IGNORECASE).strip(' ,;e'):
+        if not re.sub(r'\bSPR\d+\b|\b\d{5,}\b', '', pergunta, flags=re.IGNORECASE).strip(' ,;e'):
             return blocos
 
     estacoes, sugestoes, nao_encontrados = identificar_estacoes(pergunta, df['Estação'].dropna().unique())
