@@ -344,6 +344,10 @@ def ler_planilha(conteudo):
 @st.cache_data(show_spinner="Lendo planilha...")
 def carregar_dados(conteudo):
     df, status_sla_cores = ler_planilha(conteudo)
+    faltando = [c for c in ['Estação', 'Status', 'Empresa', 'Data'] if c not in df.columns]
+    if faltando:
+        raise ValueError(f"a planilha não tem a(s) coluna(s) {', '.join(faltando)}. "
+                         "Confira se é a exportação do Portal de Chamados.")
 
     status_sla_cores = status_sla_cores[:len(df)]
     if len(status_sla_cores) < len(df):
