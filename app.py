@@ -524,6 +524,35 @@ def filtrar_status(df, status_selecionado):
     return df
 
 
+def comparar_trimestres(hist, data_ref):
+    """Destaques dos últimos 3 meses completos contra os 3 anteriores."""
+    if hist.empty:
+        return []
+    # O mês da data de referência só entra se já tiver terminado
+    if (data_ref + pd.Timedelta(days=1)).month == data_ref.month:
+        hist = hist[hist['Mês'] < data_ref.to_period('M').to_timestamp()]
+    if len(hist) < 6:
+        return []
+    ult, ant = hist.tail(3), hist.iloc[-6:-3]
+    variacao = lambda novo, base: f"{pct(novo - base, base):+.1f}%" if base else "—"
+    meses = f"{ult['Mês'].iloc[0].strftime('%m/%Y')} a {ult['Mês'].iloc[-1].strftime('%m/%Y')}"
+    ab_u, ab_a = ult['Abertos'].sum(), ant['Abertos'].sum()
+    rs_u, rs_a = ult['Resolvidos'].sum(), ant['Resolvidos'].sum()
+    destaques = [f"Nos últimos 3 meses completos ({meses}) foram abertos **{ab_u}** chamados "
+                 f"({variacao(ab_u, ab_a)} vs. trimestre anterior) e resolvidos **{rs_u}** ({variacao(rs_u, rs_a)})."]
+    med_u, med_a = ult['Mediana Dias Resolução'].mean(), ant['Mediana Dias Resolução'].mean()
+    if pd.notna(med_u) and pd.notna(med_a):
+        tend = "melhorou" if med_u < med_a else "piorou"
+        destaques.append(f"O tempo mediano de resolução **{tend}**: {med_a:.0f} → {med_u:.0f} dias.")
+    saldo = ult['Saldo do Mês'].sum()
+    if saldo == 0:
+        destaques.append("O backlog **ficou estável** no último trimestre.")
+    else:
+        destaques.append(f"O backlog {'cresceu' if saldo > 0 else 'diminuiu'} **{abs(saldo)}** chamados "
+                         f"no último trimestre.")
+    return destaques
+
+
 def gerar_excel(abas):
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
@@ -1346,22 +1375,7 @@ if arquivo_upload:
         abertos = df_final[df_final['Categoria'] == 'Aberto'].copy()
         abertos['Idade (dias)'] = (data_ref - abertos['Data']).dt.days
 
-        # Comparação dos últimos 3 meses fechados com os 3 anteriores
-        destaques = []
-        if len(hist) >= 6:
-            ult, ant = hist.tail(3), hist.iloc[-6:-3]
-            ab_u, ab_a = ult['Abertos'].sum(), ant['Abertos'].sum()
-            rs_u, rs_a = ult['Resolvidos'].sum(), ant['Resolvidos'].sum()
-            var_ab = pct(ab_u - ab_a, ab_a)
-            var_rs = pct(rs_u - rs_a, rs_a)
-            destaques.append(f"Nos últimos 3 meses foram abertos **{ab_u}** chamados "
-                             f"({var_ab:+.1f}% vs. trimestre anterior) e resolvidos **{rs_u}** ({var_rs:+.1f}%).")
-            med_u, med_a = ult['Mediana Dias Resolução'].mean(), ant['Mediana Dias Resolução'].mean()
-            if pd.notna(med_u) and pd.notna(med_a):
-                tend = "melhorou" if med_u < med_a else "piorou"
-                destaques.append(f"O tempo mediano de resolução **{tend}**: {med_a:.0f} → {med_u:.0f} dias.")
-            saldo = ult['Saldo do Mês'].sum()
-            destaques.append(f"O backlog {'cresceu' if saldo > 0 else 'diminuiu'} **{abs(saldo)}** chamados no último trimestre.")
+        destaques = comparar_trimestres(hist, data_ref)
 
         if not abertos.empty:
             mais90 = int((abertos['Idade (dias)'] > 90).sum())
