@@ -392,6 +392,16 @@ def carregar_dados(conteudo):
     return df, duplicadas
 
 
+def preparar_filtro(key, opcoes, padrao):
+    """Mantém a escolha do filtro entre execuções; só descarta o que saiu das opções atuais."""
+    atual = st.session_state.get(key, padrao)
+    if isinstance(padrao, list):
+        atual = [v for v in atual if v in opcoes]
+    elif atual not in opcoes:
+        atual = padrao
+    st.session_state[key] = atual
+
+
 def formatar_data(valor, vazio='sem data'):
     """dd/mm/aaaa; data ausente (NaT/None) vira texto em vez de derrubar o app."""
     return valor.strftime('%d/%m/%Y') if pd.notna(valor) else vazio
@@ -938,27 +948,31 @@ if arquivo_upload:
     col_regional = next((c for c in ['UF', 'Regional'] if c in df.columns), None)
     if col_regional:
         regionais = sorted(df[col_regional].unique().tolist())
-        regional_selecionada = st.sidebar.selectbox("1. Regional (Estado):", options=["TODAS"] + regionais)
+        preparar_filtro('f_regional', ["TODAS"] + regionais, "TODAS")
+        regional_selecionada = st.sidebar.selectbox("1. Regional (Estado):", options=["TODAS"] + regionais,
+                                                    key='f_regional')
         if regional_selecionada != "TODAS":
             df_f0 = df_f0[df_f0[col_regional] == regional_selecionada]
 
     empresas_disponiveis = sorted(df_f0['Empresa'].dropna().astype(str).unique().tolist())
-    empresa_selecionada = st.sidebar.selectbox("2. Empresa Prestadora:", options=["TODAS"] + empresas_disponiveis)
+    preparar_filtro('f_empresa', ["TODAS"] + empresas_disponiveis, "TODAS")
+    empresa_selecionada = st.sidebar.selectbox("2. Empresa Prestadora:", options=["TODAS"] + empresas_disponiveis,
+                                               key='f_empresa')
 
     if empresa_selecionada != "TODAS":
         df_f1 = df_f0[df_f0['Empresa'] == empresa_selecionada]
     else:
         df_f1 = df_f0
 
-    status_selecionado = st.sidebar.selectbox(
-        "3. Status do Chamado:",
-        options=["TODOS"] + sorted(df_f1['Status'].unique().tolist())
-    )
+    opcoes_status = ["TODOS"] + sorted(df_f1['Status'].unique().tolist())
+    preparar_filtro('f_status', opcoes_status, "TODOS")
+    status_selecionado = st.sidebar.selectbox("3. Status do Chamado:", options=opcoes_status, key='f_status')
 
     df_f2 = filtrar_status(df_f1, status_selecionado)
 
     sla_disponiveis = sorted(df_f2['SLA'].dropna().astype(str).unique().tolist())
-    sla_selecionado = st.sidebar.selectbox("4. SLA:", options=["TODOS"] + sla_disponiveis)
+    preparar_filtro('f_sla', ["TODOS"] + sla_disponiveis, "TODOS")
+    sla_selecionado = st.sidebar.selectbox("4. SLA:", options=["TODOS"] + sla_disponiveis, key='f_sla')
 
     if sla_selecionado != "TODOS":
         df_f3 = df_f2[df_f2['SLA'].astype(str) == sla_selecionado]
@@ -967,15 +981,16 @@ if arquivo_upload:
 
     if 'Tipo' in df_f3.columns:
         tipos_disponiveis = sorted(df['Tipo'].unique().tolist())
-        tipos_selecionados = st.sidebar.multiselect("5. Tipo de Chamado:", options=tipos_disponiveis,
-                                                    default=tipos_disponiveis)
+        preparar_filtro('f_tipos', tipos_disponiveis, tipos_disponiveis)
+        tipos_selecionados = st.sidebar.multiselect("5. Tipo de Chamado:", options=tipos_disponiveis, key='f_tipos')
         df_f4 = df_f3[df_f3['Tipo'].isin(tipos_selecionados)]
     else:
         df_f4 = df_f3
 
     estacoes_disponiveis = sorted(df_f4['Estação'].dropna().astype(str).unique().tolist())
+    preparar_filtro('f_estacoes', estacoes_disponiveis, [])
     estacoes_selecionadas = st.sidebar.multiselect(
-        "6. Estações (Sites):", options=estacoes_disponiveis,
+        "6. Estações (Sites):", options=estacoes_disponiveis, key='f_estacoes',
         help="Deixe vazio para considerar todas as estações."
     )
 
