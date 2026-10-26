@@ -515,8 +515,10 @@ def historico_mensal(df, inicio=None, fim=None):
     if 'Data Acionamento' in fechados.columns:
         saida = saida.fillna(fechados['Data Acionamento'].dt.to_period('M').dt.to_timestamp())
     saida = saida.fillna(fechados['Mês Abertura'])
-    # Fechamento antes da abertura (#013) pode cair antes do 1º mês do gráfico e nunca sair do backlog
-    saida = saida.mask(saida < fechados['Mês Abertura'], fechados['Mês Abertura'])
+    # Fechados antes de abrir (#013) são anteriores ao SOPRO: entram em Abertos/Resolvidos, mas não no backlog
+    pre_sopro = fechados['Data Fechamento'] < fechados['Data']
+    fora_backlog = pd.concat([saida[pre_sopro].value_counts(),
+                              -fechados.loc[pre_sopro, 'Mês Abertura'].value_counts()], axis=1).sum(axis=1)
     resolvidos = saida[fechados['Categoria'] == 'Resolvido'].value_counts().rename('Resolvidos')
     cancelados = saida[fechados['Categoria'] == 'Cancelado'].value_counts().rename('Cancelados')
     mediana = res.groupby('Mês Fechamento')['Dias p/ Resolver'].median().rename('Mediana Dias Resolução')
@@ -532,7 +534,8 @@ def historico_mensal(df, inicio=None, fim=None):
     h.index.name = 'Mês'
     for c in ['Abertos', 'Resolvidos', 'Cancelados']:
         h[c] = h[c].fillna(0).astype(int)
-    h['Saldo do Mês'] = h['Abertos'] - h['Resolvidos'] - h['Cancelados']
+    h['Saldo do Mês'] = (h['Abertos'] - h['Resolvidos'] - h['Cancelados']
+                         + fora_backlog.reindex(h.index, fill_value=0).astype(int))
     h['Backlog Acumulado'] = h['Saldo do Mês'].cumsum()
     h['% Resolvidos s/ Abertos'] = (h['Resolvidos'] / h['Abertos'].where(h['Abertos'] > 0) * 100).round(1)
     h['Mediana Dias Resolução'] = h['Mediana Dias Resolução'].round(1)
