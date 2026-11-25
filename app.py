@@ -549,15 +549,48 @@ def filtrar_status(df, status_selecionado):
     return df
 
 
-def pdf_resumo(df, filtros, referencia, hist):
-    """PDF de uma página A4: filtros, resumo, status, SLA por tipo e backlog acumulado."""
-    from matplotlib.dates import DateFormatter  # matplotlib só carrega ao baixar o PDF
-    from matplotlib.figure import Figure
+def grafico_status(df):
+    d = df.groupby(['Categoria', 'Status']).size().reset_index(name='Quantidade')
+    fig = px.sunburst(d, path=['Categoria', 'Status'], values='Quantidade',
+                      color='Categoria', color_discrete_map=CATEGORIA_CORES)
+    fig.update_traces(textinfo='label+percent root')
+    return fig
 
-    fig = Figure(figsize=(8.27, 11.69))
-    fig.text(0.06, 0.965, "Gestão de Chamados SOPRO · Resumo do filtro", fontsize=16, weight='bold')
-    fig.text(0.06, 0.945, referencia, fontsize=8.5, color='#555555')
-    fig.text(0.06, 0.928, "Filtros: " + filtros, fontsize=8.5, color='#555555', wrap=True)
+
+def grafico_sla_tipo(df):
+    d = df.groupby(['Tipo', 'SLA']).size().reset_index(name='Quantidade')
+    return px.bar(d, x='Tipo', y='Quantidade', color='SLA', barmode='stack', color_discrete_map=SLA_CORES)
+
+
+def grafico_historico(hist):
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    fig.add_bar(x=hist['Mês'], y=hist['Abertos'], name='Abertos', marker_color='#3498DB')
+    fig.add_bar(x=hist['Mês'], y=hist['Resolvidos'], name='Resolvidos', marker_color=CATEGORIA_CORES['Resolvido'])
+    fig.add_bar(x=hist['Mês'], y=hist['Cancelados'], name='Cancelados', marker_color=CATEGORIA_CORES['Cancelado'])
+    fig.add_trace(go.Scatter(x=hist['Mês'], y=hist['Backlog Acumulado'], name='Backlog acumulado',
+                             mode='lines+markers', line=dict(color='#E74C3C', width=3)), secondary_y=True)
+    fig.update_layout(barmode='group', title='Abertos x Resolvidos x Cancelados por mês',
+                      hovermode='x unified')
+    fig.update_xaxes(tickformat='%m/%Y')
+    fig.update_yaxes(title_text='Chamados no mês', secondary_y=False)
+    fig.update_yaxes(title_text='Backlog acumulado', secondary_y=True)
+    return fig
+
+
+def pdf_resumo(df, filtros, referencia, hist):
+    """PDF de uma página A4 com os mesmos gráficos do app: status, SLA por tipo e histórico com backlog."""
+    import base64
+    import kaleido
+    # Mantém um Chrome aberto entre as imagens (sem isso, cada gráfico abre um navegador: ~4x mais lento)
+    kaleido.start_sync_server(silence_warnings=True)
+    largura, altura = 794, 1123  # A4 em pixels (96 dpi)
+
+    def imagem(fig, x, y, w, h, titulo):
+        fig = go.Figure(fig).update_layout(template='plotly_white+sopro', margin=dict(l=40, r=20, t=50, b=40),
+                                           title=dict(text=titulo, font_size=16))
+        png = base64.b64encode(fig.to_image(format='png', width=w, height=h, scale=2)).decode()
+        return dict(source='data:image/png;base64,' + png, xref='paper', yref='paper',
+                    x=x / largura, y=1 - y / altura, sizex=w / largura, sizey=h / altura)
 
     cat = df['Categoria'].value_counts()
     total = len(df)
@@ -567,52 +600,23 @@ def pdf_resumo(df, filtros, referencia, hist):
                    ("Resolvidos", f"{cat.get('Resolvido', 0)} ({pct(cat.get('Resolvido', 0), total):.0f}%)"),
                    ("Cancelados", f"{cat.get('Cancelado', 0)} ({pct(cat.get('Cancelado', 0), total):.0f}%)"),
                    ("SLA no prazo", f"{pct((df['SLA'] == 'NO PRAZO').sum(), medido):.1f}%")]
-    for i, (nome, valor) in enumerate(indicadores):
-        fig.text(0.06 + i * 0.18, 0.875, valor, fontsize=13, weight='bold')
-        fig.text(0.06 + i * 0.18, 0.86, nome, fontsize=8, color='#555555')
+    textos = [(40, 30, "<b>Gestão de Chamados SOPRO · Resumo do filtro</b>", 22),
+              (40, 62, referencia, 11), (40, 80, "Filtros: " + filtros, 11)]
+    textos += [(40 + i * 145, 120, f"<b>{valor}</b><br><span style='font-size:11px'>{nome}</span>", 18)
+                for i, (nome, valor) in enumerate(indicadores)]
 
-    y = 0.81  # topo do próximo bloco: cada tabela ocupa só a altura das suas linhas
-
-    def tabela(titulo, t):
-        nonlocal y
-        altura = 0.021 * (len(t) + 1)
-        ax = fig.add_axes([0.06, y - altura, 0.88, altura])
-        y -= altura + 0.06
-        ax.axis('off')
-        ax.set_title(titulo, loc='left', fontsize=11, weight='bold')
-        tb = ax.table(cellText=t.values, colLabels=t.columns, bbox=[0, 0, 1, 1], cellLoc='center')
-        tb.auto_set_font_size(False)
-        tb.set_fontsize(8)
-        for (lin, _), c in tb.get_celld().items():
-            c.set_edgecolor('#DDDDDD')
-            if lin == 0:
-                c.set_facecolor('#1F3A68')
-                c.get_text().set_color('white')
-
-    status = df.groupby(['Categoria', 'Status']).size().reset_index(name='Qtd').sort_values('Qtd', ascending=False)
-    status['%'] = (status['Qtd'] / total * 100).round(1)
-    tabela("Status dos chamados", status.head(12))
-
+    imagens = [imagem(grafico_status(df), 30, 175, 360, 400, "Status dos chamados")]
     if 'Tipo' in df.columns:
-        sla = pd.crosstab(df['Tipo'], df['SLA']).reindex(columns=list(SLA_CORES), fill_value=0)
-        sla['% no prazo'] = [f"{pct(r['NO PRAZO'], r['NO PRAZO'] + r['FORA DO PRAZO']):.0f}%" for _, r in sla.iterrows()]
-        sla = sla.loc[sla[list(SLA_CORES)].sum(axis=1).sort_values(ascending=False).index].reset_index()
-        # shortcut: só os 12 tipos com mais chamados cabem na página; paginar se o portal criar mais tipos
-        tabela("SLA por tipo de chamado", sla.head(12))
-
-    ax = fig.add_axes([0.1, max(0.05, y - 0.27), 0.84, min(0.27, y - 0.05)])
-    ax.set_title("Backlog acumulado por mês", loc='left', fontsize=11, weight='bold')
+        imagens.append(imagem(grafico_sla_tipo(df), 400, 175, 370, 400, "SLA por tipo de chamado"))
     if not hist.empty:
-        ax.plot(hist['Mês'], hist['Backlog Acumulado'], color='#E74C3C', marker='o', linewidth=2)
-        ax.xaxis.set_major_formatter(DateFormatter('%m/%Y'))
-        ax.tick_params(labelsize=8)
-        ax.grid(alpha=0.3)
-        ax.margins(y=0.15)
-        ax.annotate(f"{hist['Backlog Acumulado'].iloc[-1]}", (hist['Mês'].iloc[-1], hist['Backlog Acumulado'].iloc[-1]),
-                    textcoords='offset points', xytext=(0, 8), ha='center', fontsize=9, weight='bold')
-    buf = io.BytesIO()
-    fig.savefig(buf, format='pdf')
-    return buf.getvalue()
+        imagens.append(imagem(grafico_historico(hist), 30, 600, 740, 480, "Histórico e backlog acumulado"))
+
+    pagina = go.Figure().update_layout(
+        template='plotly_white', width=largura, height=altura, margin=dict(l=0, r=0, t=0, b=0),
+        xaxis_visible=False, yaxis_visible=False, images=imagens,
+        annotations=[dict(x=x / largura, y=1 - y / altura, text=t, font_size=f, xref='paper', yref='paper',
+                          xanchor='left', yanchor='top', align='left', showarrow=False) for x, y, t, f in textos])
+    return pagina.to_image(format='pdf', width=largura, height=altura)
 
 
 def fechamento_antes_da_abertura(df):
@@ -1257,17 +1261,12 @@ if arquivo_upload:
         c1, c2 = st.columns(2)
         with c1:
             st.subheader("Status dos chamados")
-            df_status = df_final.groupby(['Categoria', 'Status']).size().reset_index(name='Quantidade')
-            fig_sun = px.sunburst(df_status, path=['Categoria', 'Status'], values='Quantidade',
-                                  color='Categoria', color_discrete_map=CATEGORIA_CORES)
-            fig_sun.update_traces(textinfo='label+percent root')
+            fig_sun = grafico_status(df_final)
             st.plotly_chart(fig_sun, width='stretch')
         with c2:
             st.subheader("SLA por tipo de chamado")
             if 'Tipo' in df_final.columns:
-                df_sla_tipo = df_final.groupby(['Tipo', 'SLA']).size().reset_index(name='Quantidade')
-                fig_sla = px.bar(df_sla_tipo, x='Tipo', y='Quantidade', color='SLA', barmode='stack',
-                                 color_discrete_map=SLA_CORES)
+                fig_sla = grafico_sla_tipo(df_final)
                 st.plotly_chart(fig_sla, width='stretch')
 
         st.subheader("📊 Distribuição de Status por Estação (Top 30 em volume)")
@@ -1315,17 +1314,7 @@ if arquivo_upload:
         if hist.empty:
             st.info("Sem dados suficientes para montar o histórico.")
         else:
-            fig_h = make_subplots(specs=[[{"secondary_y": True}]])
-            fig_h.add_bar(x=hist['Mês'], y=hist['Abertos'], name='Abertos', marker_color='#3498DB')
-            fig_h.add_bar(x=hist['Mês'], y=hist['Resolvidos'], name='Resolvidos', marker_color=CATEGORIA_CORES['Resolvido'])
-            fig_h.add_bar(x=hist['Mês'], y=hist['Cancelados'], name='Cancelados', marker_color=CATEGORIA_CORES['Cancelado'])
-            fig_h.add_trace(go.Scatter(x=hist['Mês'], y=hist['Backlog Acumulado'], name='Backlog acumulado',
-                                       mode='lines+markers', line=dict(color='#E74C3C', width=3)), secondary_y=True)
-            fig_h.update_layout(barmode='group', title='Abertos x Resolvidos x Cancelados por mês',
-                                hovermode='x unified')
-            fig_h.update_xaxes(tickformat='%m/%Y')
-            fig_h.update_yaxes(title_text='Chamados no mês', secondary_y=False)
-            fig_h.update_yaxes(title_text='Backlog acumulado', secondary_y=True)
+            fig_h = grafico_historico(hist)
             st.plotly_chart(fig_h, width='stretch')
 
             c1, c2 = st.columns(2)
