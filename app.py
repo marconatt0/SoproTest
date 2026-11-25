@@ -549,6 +549,72 @@ def filtrar_status(df, status_selecionado):
     return df
 
 
+def pdf_resumo(df, filtros, referencia, hist):
+    """PDF de uma página A4: filtros, resumo, status, SLA por tipo e backlog acumulado."""
+    from matplotlib.dates import DateFormatter  # matplotlib só carrega ao baixar o PDF
+    from matplotlib.figure import Figure
+
+    fig = Figure(figsize=(8.27, 11.69))
+    fig.text(0.06, 0.965, "Gestão de Chamados SOPRO · Resumo do filtro", fontsize=16, weight='bold')
+    fig.text(0.06, 0.945, referencia, fontsize=8.5, color='#555555')
+    fig.text(0.06, 0.928, "Filtros: " + filtros, fontsize=8.5, color='#555555', wrap=True)
+
+    cat = df['Categoria'].value_counts()
+    total = len(df)
+    medido = df['SLA'].isin(['NO PRAZO', 'FORA DO PRAZO']).sum()
+    indicadores = [("Total", f"{total}"),
+                   ("Em aberto", f"{cat.get('Aberto', 0)} ({pct(cat.get('Aberto', 0), total):.0f}%)"),
+                   ("Resolvidos", f"{cat.get('Resolvido', 0)} ({pct(cat.get('Resolvido', 0), total):.0f}%)"),
+                   ("Cancelados", f"{cat.get('Cancelado', 0)} ({pct(cat.get('Cancelado', 0), total):.0f}%)"),
+                   ("SLA no prazo", f"{pct((df['SLA'] == 'NO PRAZO').sum(), medido):.1f}%")]
+    for i, (nome, valor) in enumerate(indicadores):
+        fig.text(0.06 + i * 0.18, 0.875, valor, fontsize=13, weight='bold')
+        fig.text(0.06 + i * 0.18, 0.86, nome, fontsize=8, color='#555555')
+
+    y = 0.81  # topo do próximo bloco: cada tabela ocupa só a altura das suas linhas
+
+    def tabela(titulo, t):
+        nonlocal y
+        altura = 0.021 * (len(t) + 1)
+        ax = fig.add_axes([0.06, y - altura, 0.88, altura])
+        y -= altura + 0.06
+        ax.axis('off')
+        ax.set_title(titulo, loc='left', fontsize=11, weight='bold')
+        tb = ax.table(cellText=t.values, colLabels=t.columns, bbox=[0, 0, 1, 1], cellLoc='center')
+        tb.auto_set_font_size(False)
+        tb.set_fontsize(8)
+        for (lin, _), c in tb.get_celld().items():
+            c.set_edgecolor('#DDDDDD')
+            if lin == 0:
+                c.set_facecolor('#1F3A68')
+                c.get_text().set_color('white')
+
+    status = df.groupby(['Categoria', 'Status']).size().reset_index(name='Qtd').sort_values('Qtd', ascending=False)
+    status['%'] = (status['Qtd'] / total * 100).round(1)
+    tabela("Status dos chamados", status.head(12))
+
+    if 'Tipo' in df.columns:
+        sla = pd.crosstab(df['Tipo'], df['SLA']).reindex(columns=list(SLA_CORES), fill_value=0)
+        sla['% no prazo'] = [f"{pct(r['NO PRAZO'], r['NO PRAZO'] + r['FORA DO PRAZO']):.0f}%" for _, r in sla.iterrows()]
+        sla = sla.loc[sla[list(SLA_CORES)].sum(axis=1).sort_values(ascending=False).index].reset_index()
+        # shortcut: só os 12 tipos com mais chamados cabem na página; paginar se o portal criar mais tipos
+        tabela("SLA por tipo de chamado", sla.head(12))
+
+    ax = fig.add_axes([0.1, max(0.05, y - 0.27), 0.84, min(0.27, y - 0.05)])
+    ax.set_title("Backlog acumulado por mês", loc='left', fontsize=11, weight='bold')
+    if not hist.empty:
+        ax.plot(hist['Mês'], hist['Backlog Acumulado'], color='#E74C3C', marker='o', linewidth=2)
+        ax.xaxis.set_major_formatter(DateFormatter('%m/%Y'))
+        ax.tick_params(labelsize=8)
+        ax.grid(alpha=0.3)
+        ax.margins(y=0.15)
+        ax.annotate(f"{hist['Backlog Acumulado'].iloc[-1]}", (hist['Mês'].iloc[-1], hist['Backlog Acumulado'].iloc[-1]),
+                    textcoords='offset points', xytext=(0, 8), ha='center', fontsize=9, weight='bold')
+    buf = io.BytesIO()
+    fig.savefig(buf, format='pdf')
+    return buf.getvalue()
+
+
 def fechamento_antes_da_abertura(df):
     """Chamados com Data Fechamento anterior à Data de abertura (erro de digitação no portal)."""
     if 'Data Fechamento' not in df.columns:
@@ -1145,6 +1211,18 @@ if arquivo_upload:
                   f"Dias em aberto contados até hoje, **{data_ref.strftime('%d/%m/%Y')}** "
                   f"(o nome do arquivo não traz a data da extração)")
     st.caption(f"{referencia} · {len(df_final)} chamados no filtro atual")
+
+    filtros_pdf = " · ".join([
+        f"Período {periodo_ini.strftime('%m/%Y')} a {periodo_fim.strftime('%m/%Y')}" if periodo_ini is not None else "Todo o período",
+        f"Regional {regional_selecionada if col_regional else 'TODAS'}", f"Empresa {empresa_selecionada}",
+        f"Status {status_selecionado}", f"SLA {sla_selecionado}",
+        "Tipos: todos" if 'Tipo' not in df.columns or set(tipos_selecionados) == set(tipos_disponiveis)
+        else f"Tipos: {', '.join(tipos_selecionados)}",
+        f"Estações: {', '.join(estacoes_selecionadas)}" if estacoes_selecionadas else "Estações: todas"])
+    st.download_button("📄 Baixar resumo deste filtro (PDF)", mime='application/pdf',
+                       file_name=f"resumo_sopro_{dt.date.today():%Y%m%d}.pdf",
+                       data=lambda: pdf_resumo(df_final, filtros_pdf, referencia.replace('**', ''),
+                                               historico_mensal(df_final, periodo_ini, periodo_fim)))
 
     aba1, aba2, aba3, aba4, aba5, aba6 = st.tabs([
         "📊 Visão Geral", "📈 Histórico de Resolução", "🏢 Eficiência por Empresa",
